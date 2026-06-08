@@ -1,0 +1,4 @@
+# See AGENTS.md for the canonical project rules.
+# Frontend: Next.js/React/TS. Backend: Python/FastAPI. Local-only demo.
+# Keep STT/TTS providers behind backend/app/adapters/. barge-in is a first-class state.
+# Do not commit .env, API keys, or audio samples. English docs default; *.ja.md for Japanese.

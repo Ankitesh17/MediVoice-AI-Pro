@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+dist/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+!.env.local.example
+
+# Audio samples / generated media
+*.wav
+*.mp3
+*.pcm
+samples/
+
+# OS / editor
+.DS_Store
+*.tsbuildinfo
