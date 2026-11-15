@@ -25,6 +25,7 @@ from typing import Annotated
 from dotenv import load_dotenv
 from fastapi import Body, FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from .services.booking_flow import BookingFlow
 
 # Load backend/.env so provider keys (MOONSHOT_API_KEY, etc.) are available
 # before any adapter reads them. Must run before the adapter imports below
@@ -223,6 +224,7 @@ async def ws_transcribe(websocket: WebSocket) -> None:
         return
 
     session = _Session(tts)
+    booking_flow = BookingFlow()
     await websocket.send_json(
         {
             "type": "state",
@@ -283,6 +285,7 @@ async def ws_transcribe(websocket: WebSocket) -> None:
                     if kind == "config":
                         await cancel_response("config-change")
                         err = session.apply_config(cfg)
+                        booking_flow.reset()
                         if err:
                             await websocket.send_json(
                                 {"type": "error", "message": err}
@@ -307,7 +310,14 @@ async def ws_transcribe(websocket: WebSocket) -> None:
             if tr.is_final and tr.text:
                 # Use session.tts (live) so a provider switch mid-session applies.
                 response_task = asyncio.create_task(
-                    _respond(websocket, llm, session.tts, session.history, tr.text)
+                    _respond(
+                            websocket,
+                            llm,
+                            session.tts,
+                            session.history,
+                            tr.text,
+                            booking_flow if session.mode == "talk" else None,
+                        )
                 )
         # Audio stream ended (client stopped sending). Let any in-flight reply
         # finish rather than cutting it off.
@@ -333,43 +343,110 @@ async def _send_transcript(websocket: WebSocket, tr: Transcript) -> None:
 _SENTENCE_ENDINGS = ".!?。！？\n"
 
 
+
 async def _respond(
     websocket: WebSocket,
     llm: LLMAdapter,
     tts: TTSAdapter,
     history: list[Message],
     user_text: str,
+    booking_flow: BookingFlow | None = None,
 ) -> None:
-    """Run the LLM on a finalized user turn, streaming text and spoken audio.
+    """Handle a finalized user turn and stream text and spoken audio.
 
-    Text deltas stream as they arrive. As soon as a sentence completes we hand
-    it to TTS and stream the audio, so speech can begin before the full reply is
-    generated.
+    Booking requests use the deterministic booking workflow.
+    Other conversations use the LLM.
     """
-    history.append(Message(role="user", content=user_text))
-    await websocket.send_json({"type": "assistant", "phase": "start"})
+
+    # First check whether the booking workflow should handle this turn.
+    if booking_flow is not None:
+        booking_reply = booking_flow.handle(user_text)
+
+        if booking_reply is not None:
+            history.append(
+                Message(role="user", content=user_text)
+            )
+
+            await websocket.send_json(
+                {"type": "assistant", "phase": "start"}
+            )
+
+            await websocket.send_json(
+                {"type": "assistant", "delta": booking_reply}
+            )
+
+            history.append(
+                Message(role="assistant", content=booking_reply)
+            )
+
+            await _speak(websocket, tts, booking_reply)
+
+            await websocket.send_json(
+                {"type": "assistant", "phase": "done"}
+            )
+            return
+
+    
+    # Keep appointment operations out of the free-form LLM.
+    # BookingFlow is the only component allowed to confirm
+    # booking, cancellation, or rescheduling operations.
+    if booking_flow is not None:
+        history[:] = [
+            message for message in history
+            if not (
+                message.role == "assistant"
+                and (
+                    "Should I confirm this change?" in message.content
+                    or "your original appointment remains unchanged"
+                    in message.content.lower()
+                )
+            )
+        ]
+
+    # Normal LLM conversation
+    history.append(
+        Message(role="user", content=user_text)
+    )
+
+    await websocket.send_json(
+        {"type": "assistant", "phase": "start"}
+    )
 
     parts: list[str] = []
+
     try:
-        pending = ""  # text not yet sent to TTS
+        pending = ""
+
         async for delta in llm.stream(history):
             parts.append(delta)
-            await websocket.send_json({"type": "assistant", "delta": delta})
+
+            await websocket.send_json(
+                {"type": "assistant", "delta": delta}
+            )
+
             pending += delta
+
             sentence, pending = _take_sentence(pending)
+
             if sentence:
                 await _speak(websocket, tts, sentence)
 
         if pending.strip():
             await _speak(websocket, tts, pending.strip())
 
-        await websocket.send_json({"type": "assistant", "phase": "done"})
+        await websocket.send_json(
+            {"type": "assistant", "phase": "done"}
+        )
+
     finally:
-        # On normal completion *or* barge-in cancellation, record whatever the
-        # assistant said so the conversation context stays coherent.
+        # Preserve conversation history, including partial responses
+        # if the user interrupts the assistant.
         reply = "".join(parts)
+
         if reply:
-            history.append(Message(role="assistant", content=reply))
+            history.append(
+                Message(role="assistant", content=reply)
+            )
 
 
 def _take_sentence(buffer: str) -> tuple[str, str]:

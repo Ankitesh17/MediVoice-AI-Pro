@@ -1,20 +1,4 @@
-"""Local STT via faster-whisper.
-
-faster-whisper is batch, not natively streaming, so we approximate streaming: an
-energy-based VAD groups incoming PCM into utterances and we transcribe each turn
-when trailing silence closes it. No API key, runs offline.
-
-**Latency note:** partials (re-transcribing the growing buffer mid-utterance)
-are expensive on CPU — each call re-runs the whole buffer, so cost grows with
-utterance length and serializes ahead of the final. They are therefore **off by
-default**; the turn-final transcribe is one cheap pass that feeds the LLM
-immediately. Set `WHISPER_PARTIALS=1` to re-enable live captions, and
-`WHISPER_MODEL=tiny` for an even faster (lower-accuracy) model.
-
-For a production streaming pipeline you'd reach for Deepgram (see deepgram.py);
-this adapter is the zero-setup default so the demo runs for anyone.
-"""
-
+"""Offline, utterance-based speech recognition using faster-whisper."""
 from __future__ import annotations
 
 import asyncio
@@ -25,31 +9,47 @@ import numpy as np
 
 from .base import SAMPLE_RATE, STTAdapter, Transcript
 
-# VAD / segmentation tuning (energy-based; good enough for a demo).
 _FRAME_MS = 32
 _FRAME_SAMPLES = SAMPLE_RATE * _FRAME_MS // 1000
-_SILENCE_RMS = 0.012  # below this is "silence"
-_SILENCE_HANG_MS = 600  # trailing silence that closes a turn
-_MIN_SPEECH_MS = 300  # ignore blips shorter than this
-_PARTIAL_EVERY_MS = 700  # re-transcribe cadence while speaking (when enabled)
+_SILENCE_RMS = 0.012
+_SILENCE_HANG_MS = 600
+_MIN_SPEECH_MS = 300
+_PARTIAL_EVERY_MS = 700
+
+# A hint, not a restriction: Whisper can still recognize other phrases.
+_DEFAULT_PROMPT = (
+    "A conversation with a UK GP clinic receptionist. "
+    "Patients book, check, cancel, or reschedule appointments. "
+    "Common demo patient names include Ankit. "
+    "Patients may say booking reference five, reference number five, "
+    "my booking reference is five, or number five. "
+    "Booking reference numbers: one, two, three, four, five, "
+    "six, seven, eight, nine, ten. "
+    "Appointment times include 9 AM, 10 AM, 11 AM, 2 PM, "
+    "3 PM, and 4 PM. "
+    "Dates include November, December, Monday, Tuesday, "
+    "Wednesday, Thursday, and Friday."
+)
 
 
 class FasterWhisperSTT(STTAdapter):
     name = "whisper"
 
     def __init__(self, model_size: str | None = None, language: str | None = None) -> None:
-        # Imported lazily inside __init__ so the module imports without the model.
         from faster_whisper import WhisperModel
 
         size = model_size or os.getenv("WHISPER_MODEL") or "base"
         self._model = WhisperModel(size, device="cpu", compute_type="int8")
-        self._language = language
-        # Partials are off by default — they add CPU cost and latency. Opt in.
+        # Set WHISPER_LANGUAGE=auto to restore automatic language detection.
+        configured_language = language if language is not None else os.getenv("WHISPER_LANGUAGE", "en")
+        self._language = None if configured_language.lower() in ("auto", "none", "") else configured_language
+        self._initial_prompt = os.getenv("WHISPER_INITIAL_PROMPT", _DEFAULT_PROMPT)
+        self._beam_size = max(1, int(os.getenv("WHISPER_BEAM_SIZE", "5")))
         self._emit_partials = os.getenv("WHISPER_PARTIALS", "0") == "1"
 
     async def transcribe(self, audio: AsyncIterator[bytes]) -> AsyncIterator[Transcript]:
-        buf = np.zeros(0, dtype=np.float32)  # current utterance
-        leftover = np.zeros(0, dtype=np.float32)  # sub-frame remainder
+        buf = np.zeros(0, dtype=np.float32)
+        leftover = np.zeros(0, dtype=np.float32)
         silence_ms = 0
         speech_ms = 0
         since_partial_ms = 0
@@ -58,9 +58,8 @@ class FasterWhisperSTT(STTAdapter):
         async for chunk in audio:
             samples = np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32768.0
             leftover = np.concatenate([leftover, samples])
-
-            # Process whole frames; keep the remainder for next time.
             n_frames = len(leftover) // _FRAME_SAMPLES
+
             for i in range(n_frames):
                 frame = leftover[i * _FRAME_SAMPLES : (i + 1) * _FRAME_SAMPLES]
                 rms = float(np.sqrt(np.mean(frame * frame)))
@@ -74,9 +73,8 @@ class FasterWhisperSTT(STTAdapter):
                     since_partial_ms += _FRAME_MS
                 elif in_speech:
                     silence_ms += _FRAME_MS
-                    buf = np.concatenate([buf, frame])  # keep trailing silence in buffer
+                    buf = np.concatenate([buf, frame])
 
-                # Emit a partial periodically while speaking (opt-in only).
                 ready_for_partial = (
                     self._emit_partials
                     and in_speech
@@ -89,7 +87,6 @@ class FasterWhisperSTT(STTAdapter):
                     if text:
                         yield Transcript(text=text, is_final=False)
 
-                # Trailing silence closes the turn.
                 if in_speech and silence_ms >= _SILENCE_HANG_MS:
                     if speech_ms >= _MIN_SPEECH_MS:
                         text = await self._run(buf)
@@ -101,21 +98,21 @@ class FasterWhisperSTT(STTAdapter):
 
             leftover = leftover[n_frames * _FRAME_SAMPLES :]
 
-        # Stream ended mid-utterance: flush a final.
         if in_speech and speech_ms >= _MIN_SPEECH_MS:
             text = await self._run(buf)
             if text:
                 yield Transcript(text=text, is_final=True)
 
     async def _run(self, audio: np.ndarray) -> str:
-        """Transcribe a float32 buffer off the event loop."""
         return await asyncio.to_thread(self._transcribe_sync, audio)
 
     def _transcribe_sync(self, audio: np.ndarray) -> str:
         segments, _ = self._model.transcribe(
             audio,
             language=self._language,
-            beam_size=1,
-            vad_filter=False,
+            beam_size=self._beam_size,
+            initial_prompt=self._initial_prompt,
+            condition_on_previous_text=False,
+            vad_filter=False,  # Utterance segmentation is already done above.
         )
         return " ".join(seg.text.strip() for seg in segments).strip()

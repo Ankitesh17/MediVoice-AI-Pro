@@ -167,6 +167,7 @@ export function TranscribeDemo() {
       wsRef.current = ws;
 
       ws.onopen = () => {
+        console.log("MediVoice: WebSocket connected");
         setStatus("live");
         // Apply whatever the user selected before pressing Start.
         ws.send(JSON.stringify({ type: "config", ...desiredConfigRef.current }));
@@ -285,6 +286,7 @@ export function TranscribeDemo() {
         const pcm = downsampleToInt16(input, inRate, TARGET_SAMPLE_RATE);
         if (ws.readyState === WebSocket.OPEN && pcm.byteLength > 0) {
           ws.send(pcm.buffer);
+          // Avoid logging every audio frame.
         }
       };
     } catch (err) {
