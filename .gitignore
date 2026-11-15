@@ -27,3 +27,6 @@ samples/
 # OS / editor
 .DS_Store
 *.tsbuildinfo
+
+# Local appointment database
+backend/medivoice.db
