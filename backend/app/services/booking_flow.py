@@ -155,6 +155,19 @@ class BookingFlow:
     )
 
         if self.stage == "idle":
+            # End the conversation when the patient has
+            # no further requests.
+            if re.fullmatch(
+                r"(?:no|nope|nah|nothing|nothing else|"
+                r"no thanks|no thank you|that's all|"
+                r"that is all)[\s,.!]*",
+                lower,
+            ):
+                self.reset()
+                return (
+                    "You're very welcome. Thank you for "
+                    "calling MediVoice Clinic. Have a lovely day!"
+                )
 
             # Respond naturally after completing an appointment.
             if re.fullmatch(
