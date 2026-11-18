@@ -164,7 +164,11 @@ The FastAPI backend runs on:
 
 ## Screenshots
 
-Screenshots of the actual AURA interface and demonstration workflows will be added here.
+### AURA — Healthcare Voice Assistant Interface
+
+![MediVoice AI Pro — AURA Voice Interface](images/medivoice-interface.png)
+
+*Interactive voice assistant with a glowing AI orb, microphone controls, and real-time conversation panel.*
 
 ## Project Structure
 
