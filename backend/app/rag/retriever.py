@@ -1,10 +1,11 @@
+from typing import Any
 
 from .vector_store import search
 
 MIN_SIMILARITY = 0.45
 
 
-def retrieve_context(question: str, top_k: int = 3) -> dict:
+def retrieve_context(question: str, top_k: int = 3) -> dict[str, Any]:
     """Retrieve relevant clinic knowledge for a question."""
 
     question = question.strip()

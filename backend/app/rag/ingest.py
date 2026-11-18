@@ -20,13 +20,13 @@ def read_document(path: Path) -> str:
     raise ValueError(f"Unsupported document format: {suffix}")
 
 
-def chunk_document(text: str, source: str) -> list[dict]:
+def chunk_document(text: str, source: str) -> list[dict[str, str]]:
     """Split a document into section-based chunks."""
-    chunks = []
+    chunks: list[dict[str, str]] = []
     heading = "General Information"
-    lines = []
+    lines: list[str] = []
 
-    def save_chunk():
+    def save_chunk() -> None:
         content = "\n".join(lines).strip()
 
         if content:
@@ -50,10 +50,10 @@ def chunk_document(text: str, source: str) -> list[dict]:
     return chunks
 
 
-def load_knowledge_base(directory: str = "knowledge_base") -> list[dict]:
+def load_knowledge_base(directory: str = "knowledge_base") -> list[dict[str, str]]:
     """Load and chunk all supported knowledge-base documents."""
     base = Path(directory)
-    chunks = []
+    chunks: list[dict[str, str]] = []
 
     for path in sorted(base.iterdir()):
         if path.is_file() and path.suffix.lower() in {

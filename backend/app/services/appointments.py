@@ -1,20 +1,20 @@
-
 import sqlite3
 from datetime import date, datetime
 from pathlib import Path
+from typing import Any
 
 DB_PATH = Path(__file__).resolve().parents[2] / "medivoice.db"
 
 AVAILABLE_TIMES = ("09:00", "10:00", "11:00", "14:00", "15:00", "16:00")
 
 
-def connect():
+def connect() -> sqlite3.Connection:
     connection = sqlite3.connect(DB_PATH, timeout=10)
     connection.execute("PRAGMA busy_timeout = 10000")
     return connection
 
 
-def init_db():
+def init_db() -> None:
     with connect() as db:
         db.execute("""
             CREATE TABLE IF NOT EXISTS appointments (
@@ -35,12 +35,10 @@ def init_db():
         """)
 
 
-def check_availability(appointment_date, appointment_time):
+def check_availability(appointment_date: str, appointment_time: str) -> tuple[bool, str]:
     try:
         requested_date = date.fromisoformat(appointment_date)
-        requested_time = datetime.strptime(
-            appointment_time, "%H:%M"
-        ).time()
+        requested_time = datetime.strptime(appointment_time, "%H:%M").time()
     except (ValueError, TypeError):
         return False, "Invalid date or time format."
 
@@ -73,8 +71,9 @@ def check_availability(appointment_date, appointment_time):
     return True, "Appointment slot is available."
 
 
-def book_appointment(patient_name, appointment_date,
-                     appointment_time, reason):
+def book_appointment(
+    patient_name: str, appointment_date: str, appointment_time: str, reason: str
+) -> dict[str, Any]:
     if not isinstance(patient_name, str) or not patient_name.strip():
         return {"success": False, "message": "Patient name is required."}
 
@@ -83,9 +82,7 @@ def book_appointment(patient_name, appointment_date,
 
     init_db()
 
-    available, message = check_availability(
-        appointment_date, appointment_time
-    )
+    available, message = check_availability(appointment_date, appointment_time)
 
     if not available:
         return {"success": False, "message": message}
@@ -120,7 +117,7 @@ def book_appointment(patient_name, appointment_date,
         }
 
 
-def list_appointments():
+def list_appointments() -> list[dict[str, Any]]:
     init_db()
 
     with connect() as db:
@@ -135,11 +132,13 @@ def list_appointments():
     return [dict(row) for row in rows]
 
 
-def get_appointment(appointment_id):
+def get_appointment(appointment_id: int | str | None) -> dict[str, Any] | None:
     """Find an appointment using its booking reference."""
     init_db()
 
     try:
+        if appointment_id is None:
+            raise TypeError("Invalid booking reference")
         appointment_id = int(appointment_id)
     except (TypeError, ValueError):
         return None
@@ -158,11 +157,13 @@ def get_appointment(appointment_id):
     return dict(row) if row else None
 
 
-def cancel_appointment(appointment_id):
+def cancel_appointment(appointment_id: int | str | None) -> dict[str, Any]:
     """Cancel a confirmed appointment without deleting its record."""
     init_db()
 
     try:
+        if appointment_id is None:
+            raise TypeError("Invalid booking reference")
         appointment_id = int(appointment_id)
     except (TypeError, ValueError):
         return {
@@ -204,13 +205,16 @@ def cancel_appointment(appointment_id):
         "success": False,
         "message": message,
     }
-import sqlite3
 
 
-def reschedule_appointment(appointment_id, appointment_date, appointment_time):
+def reschedule_appointment(
+    appointment_id: int | str | None, appointment_date: str, appointment_time: str
+) -> dict[str, Any]:
     """Move a confirmed demo booking without changing its reference."""
     init_db()
     try:
+        if appointment_id is None:
+            raise TypeError("Invalid booking reference")
         appointment_id = int(appointment_id)
     except (TypeError, ValueError):
         return {"success": False, "message": "Invalid booking reference."}
@@ -219,8 +223,8 @@ def reschedule_appointment(appointment_id, appointment_date, appointment_time):
     with connect() as db:
         db.execute("BEGIN IMMEDIATE")
         row = db.execute(
-            "SELECT appointment_date, appointment_time, status "
-            "FROM appointments WHERE id = ?", (appointment_id,)
+            "SELECT appointment_date, appointment_time, status FROM appointments WHERE id = ?",
+            (appointment_id,),
         ).fetchone()
         if row is None:
             return {"success": False, "message": "Booking reference not found."}
@@ -263,5 +267,5 @@ def reschedule_appointment(appointment_id, appointment_date, appointment_time):
     return {
         "success": True,
         "appointment_id": appointment_id,
-        "message": f"Appointment {appointment_id} has been rescheduled to {appointment_date} at {appointment_time}.",
+        "message": f"Appointment {appointment_id} has been rescheduled to {appointment_date} at {appointment_time}.",  # noqa: E501
     }
