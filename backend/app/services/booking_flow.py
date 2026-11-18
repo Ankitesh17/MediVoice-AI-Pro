@@ -1,16 +1,15 @@
 import re
-from .date_parser import parse_natural_date
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
-
+from datetime import date
 
 from .appointments import (
     book_appointment,
+    cancel_appointment,
     check_availability,
     get_appointment,
-    cancel_appointment,
     reschedule_appointment,
 )
+from .date_parser import parse_natural_date
 
 
 def _affirmative(text: str) -> bool:
@@ -32,31 +31,43 @@ def _affirmative(text: str) -> bool:
         r"that is right)"
     )
 
-    return bool(re.fullmatch(
-        rf"{positive}(?: {suffix})*",
-        text,
-    ))
+    return bool(
+        re.fullmatch(
+            rf"{positive}(?: {suffix})*",
+            text,
+        )
+    )
+
 
 def _negative(text: str) -> bool:
     return bool(re.fullmatch(r"(?:no|no thanks|not yet|don't|do not)[\s,.!]*", text))
-
-
-
-
 
 
 def _reference(text: str) -> int | None:
     """Extract a booking reference from natural speech."""
 
     words = {
-        "zero": 0, "one": 1, "two": 2, "three": 3,
-        "four": 4, "five": 5, "six": 6,
-        "seven": 7, "eight": 8, "nine": 9,
-        "ten": 10, "eleven": 11, "twelve": 12,
-        "thirteen": 13, "fourteen": 14,
-        "fifteen": 15, "sixteen": 16,
-        "seventeen": 17, "eighteen": 18,
-        "nineteen": 19, "twenty": 20,
+        "zero": 0,
+        "one": 1,
+        "two": 2,
+        "three": 3,
+        "four": 4,
+        "five": 5,
+        "six": 6,
+        "seven": 7,
+        "eight": 8,
+        "nine": 9,
+        "ten": 10,
+        "eleven": 11,
+        "twelve": 12,
+        "thirteen": 13,
+        "fourteen": 14,
+        "fifteen": 15,
+        "sixteen": 16,
+        "seventeen": 17,
+        "eighteen": 18,
+        "nineteen": 19,
+        "twenty": 20,
     }
 
     lower = text.lower().strip()
@@ -80,11 +91,7 @@ def _reference(text: str) -> int | None:
     lower = re.sub(rf"^{prefix}", "", lower).strip()
 
     # Also accept "it's 11" and "it is eleven".
-    lower = re.sub(
-        r"^it(?:'s| is)\s+",
-        "",
-        lower
-    ).strip()
+    lower = re.sub(r"^it(?:'s| is)\s+", "", lower).strip()
 
     # Accept "number eleven" after conversational prefixes.
     lower = re.sub(r"^(?:number|no)\s+", "", lower).strip()
@@ -95,10 +102,8 @@ def _reference(text: str) -> int | None:
         return value if value > 0 else None
 
     # Accept spoken numbers from one to twenty.
-    value = words.get(lower)
-    return value if value is not None and value > 0 else None
-
-
+    spoken_value = words.get(lower)
+    return spoken_value if spoken_value is not None and spoken_value > 0 else None
 
 
 @dataclass
@@ -114,7 +119,7 @@ class BookingFlow:
     new_date: str = ""
     new_time: str = ""
 
-    def reset(self):
+    def reset(self) -> None:
         self.stage = "idle"
         self.name = ""
         self.appointment_date = ""
@@ -140,8 +145,6 @@ class BookingFlow:
         if lower.strip() in leaked_prompts:
             return ""
 
-
-
         # Handle follow-up after a declined reschedule
         if self.stage == "reschedule_declined":
             self.reset()
@@ -157,8 +160,6 @@ class BookingFlow:
                 )
 
             # Allow new requests to be processed normally
-
-
 
         # Global polite conversation ending.
         # Do not treat "no" as a goodbye because it is
@@ -179,16 +180,10 @@ class BookingFlow:
                 "confirm",
             }:
                 self.reset()
-                return (
-                    "You're very welcome. Thank you for "
-                    "calling MediVoice AI. Have a lovely day!"
-                )
+                return "You're very welcome. Thank you for calling MediVoice AI. Have a lovely day!"
 
             self.reset()
-            return (
-                "Goodbye! Thank you for calling MediVoice. "
-                "Take care."
-    )
+            return "Goodbye! Thank you for calling MediVoice. Take care."
 
         if self.stage == "idle":
             # End the conversation when the patient has
@@ -212,11 +207,7 @@ class BookingFlow:
                 r"[\s,.!]*",
                 lower,
             ):
-                return (
-                    "You're very welcome! Is there anything "
-                    "else I can help you with today?"
-                )
-
+                return "You're very welcome! Is there anything else I can help you with today?"
 
             if re.search(
                 r"\b(reschedul\w*|re[\s-]?schedul\w*|"
@@ -227,14 +218,16 @@ class BookingFlow:
                 r"move|change|shift|postpone)\b",
                 lower,
             ):
-
                 self.action = "reschedule"
                 self.stage = "manage_reference"
                 ref = _reference(lower)
                 if ref is not None:
                     return self._manage_reference(ref)
                 return "Certainly. What is your appointment booking reference?"
-            if re.search(r"\b(cancel|delete)\b.*\b(appointment|booking)\b|\b(appointment|booking)\b.*\b(cancel|delete)\b", lower):
+            if re.search(
+                r"\b(cancel|delete)\b.*\b(appointment|booking)\b|\b(appointment|booking)\b.*\b(cancel|delete)\b",  # noqa: E501
+                lower,
+            ):
                 self.action = "cancel"
                 self.stage = "manage_reference"
                 ref = _reference(lower)
@@ -242,7 +235,10 @@ class BookingFlow:
                     return self._manage_reference(ref)
                 return "Certainly. What is your appointment booking reference?"
 
-            if re.search(r"\b(check|find|look up|lookup|view|status|details)\b.*\b(appointment|booking)\b|\b(appointment|booking)\b.*\b(check|status|details)\b", lower):
+            if re.search(
+                r"\b(check|find|look up|lookup|view|status|details)\b.*\b(appointment|booking)\b|\b(appointment|booking)\b.*\b(check|status|details)\b",  # noqa: E501
+                lower,
+            ):
                 self.action = "check"
                 self.stage = "manage_reference"
                 ref = _reference(lower)
@@ -250,20 +246,16 @@ class BookingFlow:
                     return self._manage_reference(ref)
                 return "Certainly. What is your appointment booking reference?"
 
-
-            if (
-                lower in {
-                    "book",
-                    "book it",
-                    "book an appointment",
-                    "schedule an appointment",
-                    "make an appointment",
-                }
-                or re.search(
-                    r"\b(book|schedule|make)\b.*\bappointment\b"
-                    r"|\bappointment\b.*\b(book|schedule)\b",
-                    lower,
-                )
+            if lower in {
+                "book",
+                "book it",
+                "book an appointment",
+                "schedule an appointment",
+                "make an appointment",
+            } or re.search(
+                r"\b(book|schedule|make)\b.*\bappointment\b"
+                r"|\bappointment\b.*\b(book|schedule)\b",
+                lower,
             ):
                 self.stage = "name"
                 return "Certainly. May I have your full name, please?"
@@ -287,7 +279,9 @@ class BookingFlow:
             name = re.sub(
                 r"^(?:the patient(?:'s)? name is|patient(?:'s)? name is|"
                 r"the name is|my name is|i am|i'm|it's|this is)\s+",
-                "", text, flags=re.IGNORECASE,
+                "",
+                text,
+                flags=re.IGNORECASE,
             ).strip(" .,!?")
 
             appointment = get_appointment(self.appointment_id)
@@ -297,10 +291,7 @@ class BookingFlow:
 
             expected = appointment["patient_name"].strip()
             # A simple name match is for a fictional demo only, not real authentication.
-            matches = (
-                re.sub(r"\s+", "", name).casefold()
-                == re.sub(r"\s+", "", expected).casefold()
-                )
+            matches = re.sub(r"\s+", "", name).casefold() == re.sub(r"\s+", "", expected).casefold()
             if not matches:
                 self.name_attempts += 1
                 if self.name_attempts >= 3:
@@ -346,7 +337,6 @@ class BookingFlow:
             )
 
         if self.stage == "reschedule_date":
-
             # Ask for clarification if speech contains
             # more than one possible calendar date.
             date_pattern = (
@@ -356,9 +346,7 @@ class BookingFlow:
                 r"november|december)\b"
             )
 
-            mentioned_dates = re.findall(
-                date_pattern, lower
-            )
+            mentioned_dates = re.findall(date_pattern, lower)
 
             if len(mentioned_dates) > 1:
                 return (
@@ -404,8 +392,13 @@ class BookingFlow:
             current = get_appointment(self.appointment_id)
             if current is None or current["status"] != "confirmed":
                 self.reset()
-                return "This appointment is no longer available to reschedule. No changes were made."
-            if (current["appointment_date"], current["appointment_time"]) == (self.new_date, new_time):
+                return (
+                    "This appointment is no longer available to reschedule. No changes were made."
+                )
+            if (current["appointment_date"], current["appointment_time"]) == (
+                self.new_date,
+                new_time,
+            ):
                 return "That is already your current appointment time. Please choose another time."
             available, message = check_availability(self.new_date, new_time)
             if not available:
@@ -419,10 +412,12 @@ class BookingFlow:
             )
 
         if self.stage == "reschedule_confirm":
-            if _affirmative(lower) or re.fullmatch(r"(?:yes,?\s*)?reschedule(?: it)?[\s,.!]*", lower):
+            if _affirmative(lower) or re.fullmatch(
+                r"(?:yes,?\s*)?reschedule(?: it)?[\s,.!]*", lower
+            ):
                 result = reschedule_appointment(self.appointment_id, self.new_date, self.new_time)
                 self.reset()
-                return result["message"]
+                return str(result["message"])
 
             if _negative(lower):
                 self.reset()
@@ -431,10 +426,12 @@ class BookingFlow:
             return "Please say yes to reschedule, or no to keep your original appointment."
 
         if self.stage == "cancel_confirm":
-            if _affirmative(lower) or bool(re.fullmatch(r"(?:yes,?\s*)?cancel(?: it| appointment)?[\s,.!]*", lower)):
+            if _affirmative(lower) or bool(
+                re.fullmatch(r"(?:yes,?\s*)?cancel(?: it| appointment)?[\s,.!]*", lower)
+            ):
                 result = cancel_appointment(self.appointment_id)
                 self.reset()
-                return result["message"]
+                return str(result["message"])
             if _negative(lower):
                 self.reset()
                 return "Okay, your appointment has not been cancelled."
@@ -443,7 +440,6 @@ class BookingFlow:
         if re.fullmatch(r"(?:cancel|stop|never mind)[\s,.!]*", lower):
             self.reset()
             return "I've stopped this booking request. No appointment was created."
-
 
         if self.stage == "name":
             name = re.sub(
@@ -461,10 +457,7 @@ class BookingFlow:
             self.name = name
             self.stage = "name_confirm"
 
-            return (
-                f"I heard your name as {self.name}. "
-                "Is that correct? Please say yes or no."
-            )
+            return f"I heard your name as {self.name}. Is that correct? Please say yes or no."
 
         if self.stage == "name_confirm":
             if _affirmative(lower):
@@ -495,12 +488,8 @@ class BookingFlow:
             # Only accept a spelling if every token is
             # a single letter, separated by spaces or hyphens.
             tokens = re.split(r"[\s-]+", spoken.strip(" .,!?"))
-            valid = (
-                len(tokens) >= 2
-                and all(
-                    len(token) == 1 and token.isalpha()
-                    for token in tokens
-                )
+            valid = len(tokens) >= 2 and all(
+                len(token) == 1 and token.isalpha() for token in tokens
             )
 
             if not valid:
@@ -513,11 +502,7 @@ class BookingFlow:
             self.name = "".join(letters).title()
             self.stage = "name_confirm"
 
-            return (
-                f"I have spelled your name as {self.name}. "
-                "Is that correct?"
-            )
-
+            return f"I have spelled your name as {self.name}. Is that correct?"
 
         if self.stage == "date":
             today = date.today()
@@ -554,7 +539,6 @@ class BookingFlow:
             self.appointment_time = appointment_time
             self.stage = "reason"
             return "What is the reason for your appointment?"
-
 
         if self.stage == "reason":
             if not text:
@@ -598,10 +582,12 @@ class BookingFlow:
 
         if self.stage == "confirm":
             if _affirmative(lower):
-                result = book_appointment(self.name, self.appointment_date, self.appointment_time, self.reason)
+                result = book_appointment(
+                    self.name, self.appointment_date, self.appointment_time, self.reason
+                )
                 self.reset()
                 if result["success"]:
-                    return f"Your demo appointment is confirmed. Your booking reference is {result['appointment_id']}."
+                    return f"Your demo appointment is confirmed. Your booking reference is {result['appointment_id']}."  # noqa: E501
                 return f"I couldn't complete the booking. {result['message']}"
             if _negative(lower):
                 self.reset()

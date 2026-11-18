@@ -136,10 +136,16 @@ def test_barge_in_cancels_and_saves_partial() -> None:
             main._respond(ws, BlockingLLM(), StubTTS(), history, "tell me a story")
         )
         # Let the reply start and emit its first token, then barge in.
-        for _ in range(50):
-            await asyncio.sleep(0)
+        for _ in range(200):
             if any(m.get("delta") == "Once " for m in ws.sent):
                 break
+            if task.done():
+                await task
+                raise AssertionError("Response finished before barge-in")
+            await asyncio.sleep(0.01)
+        else:
+            task.cancel()
+            raise AssertionError("Timed out waiting for first response token")
         task.cancel()
         try:
             await task

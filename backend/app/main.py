@@ -17,18 +17,21 @@ import base64
 import io
 import json
 import logging
+import re
 import struct
 import time
 from collections.abc import AsyncIterator
-from typing import Annotated
-import re
-from app.rag.retriever import retrieve_context
 from pathlib import Path
+from typing import Annotated
+
 from dotenv import load_dotenv
 from fastapi import Body, FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from .services.booking_flow import BookingFlow
+
+from app.rag.retriever import retrieve_context
+
 from .services.appointments import init_db
+from .services.booking_flow import BookingFlow
 
 # Load backend/.env so provider keys (MOONSHOT_API_KEY, etc.) are available
 # before any adapter reads them. Must run before the adapter imports below
@@ -54,14 +57,16 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("realtime-voice-agent-demo")
 
 app = FastAPI(title="realtime-voice-agent-demo backend", version="0.1.0")
+
+
 @app.on_event("startup")
-async def initialize_database():
+async def initialize_database() -> None:
     init_db()
     logger.info("MediVoice AI database initialized successfully")
 
 
 @app.on_event("startup")
-async def preload_rag_model():
+async def preload_rag_model() -> None:
     """Warm up the embedding model before handling voice requests."""
     from app.rag.embeddings import get_model
 
@@ -71,6 +76,7 @@ async def preload_rag_model():
         logger.info("RAG | Embedding model ready")
     except Exception:
         logger.exception("RAG | Embedding model preload failed")
+
 
 # Local dev only: the Next.js frontend runs on :3000.
 app.add_middleware(
@@ -309,9 +315,7 @@ async def ws_transcribe(websocket: WebSocket) -> None:
                         err = session.apply_config(cfg)
                         booking_flow.reset()
                         if err:
-                            await websocket.send_json(
-                                {"type": "error", "message": err}
-                            )
+                            await websocket.send_json({"type": "error", "message": err})
                         await websocket.send_json(session.config_event())
                     elif kind == "interrupt":
                         # Client detected the user speaking over the assistant.
@@ -333,13 +337,13 @@ async def ws_transcribe(websocket: WebSocket) -> None:
                 # Use session.tts (live) so a provider switch mid-session applies.
                 response_task = asyncio.create_task(
                     _respond(
-                            websocket,
-                            llm,
-                            session.tts,
-                            session.history,
-                            tr.text,
-                            booking_flow if session.mode == "talk" else None,
-                        )
+                        websocket,
+                        llm,
+                        session.tts,
+                        session.history,
+                        tr.text,
+                        booking_flow if session.mode == "talk" else None,
+                    )
                 )
         # Finish normal responses, but cancel on client disconnect.
         if response_task is not None:
@@ -366,12 +370,12 @@ async def ws_transcribe(websocket: WebSocket) -> None:
 
 
 async def _send_transcript(websocket: WebSocket, tr: Transcript) -> None:
-    await websocket.send_json(
-        {"type": "transcript", "text": tr.text, "isFinal": tr.is_final}
-    )
+    await websocket.send_json({"type": "transcript", "text": tr.text, "isFinal": tr.is_final})
 
 
 _SENTENCE_ENDINGS = ".!?。！？\n"
+
+
 def _emergency_safety_reply(user_text: str) -> str | None:
     """Handle clear medical emergencies without relying on the LLM."""
     text = user_text.lower().strip()
@@ -440,27 +444,47 @@ def _medication_safety_reply(user_text: str) -> str | None:
         return None
 
     medication_terms = (
-        "medicine", "medication", "drug", "tablet",
-        "painkiller", "antibiotic", "dose", "dosage",
+        "medicine",
+        "medication",
+        "drug",
+        "tablet",
+        "painkiller",
+        "antibiotic",
+        "dose",
+        "dosage",
     )
 
     advice_terms = (
-        "should i take", "can i take", "what should i take",
-        "which medicine", "which medication", "recommend",
-        "how much", "how many", "what dose", "what dosage",
-        "prescribe", "give me medicine",
-        "should i double", "can i double",
-        "double my dose", "increase my dose",
-        "reduce my dose", "change my dose",
-        "stop taking", "skip my dose",
-        "increase my medication", "decrease my medication",
-        "reduce my medication", "change my medication",
-        "double my medication", "skip my medication",
+        "should i take",
+        "can i take",
+        "what should i take",
+        "which medicine",
+        "which medication",
+        "recommend",
+        "how much",
+        "how many",
+        "what dose",
+        "what dosage",
+        "prescribe",
+        "give me medicine",
+        "should i double",
+        "can i double",
+        "double my dose",
+        "increase my dose",
+        "reduce my dose",
+        "change my dose",
+        "stop taking",
+        "skip my dose",
+        "increase my medication",
+        "decrease my medication",
+        "reduce my medication",
+        "change my medication",
+        "double my medication",
+        "skip my medication",
     )
 
-    if (
-        any(term in text for term in medication_terms)
-        and any(term in text for term in advice_terms)
+    if any(term in text for term in medication_terms) and any(
+        term in text for term in advice_terms
     ):
         return (
             "I'm sorry you're feeling unwell. "
@@ -478,11 +502,11 @@ def _appointment_safety_reply(user_text: str) -> str | None:
 
     appointment = r"\b(?:appointment|booking|slot)\b"
     operation = (
-    r"\b(?:book|booked|confirm|confirmed|"
-    r"schedule|scheduled|reschedule|rescheduled|"
-    r"cancel|cancelled|canceled|"
-    r"change|changed|move|moved|update|updated)\b"
-)
+        r"\b(?:book|booked|confirm|confirmed|"
+        r"schedule|scheduled|reschedule|rescheduled|"
+        r"cancel|cancelled|canceled|"
+        r"change|changed|move|moved|update|updated)\b"
+    )
 
     # Questions about whether a transaction actually happened.
     status_question = (
@@ -528,6 +552,7 @@ def _appointment_safety_reply(user_text: str) -> str | None:
         )
     return None
 
+
 async def _respond(
     websocket: WebSocket,
     llm: LLMAdapter,
@@ -541,7 +566,6 @@ async def _respond(
     Booking requests use the deterministic booking workflow.
     Other conversations use the LLM.
     """
-    response_start = time.monotonic()
     logger.info("LATENCY | Response processing started")
 
     # Emergency safety takes priority over bookings, RAG, and Gemini.
@@ -550,23 +574,15 @@ async def _respond(
     if emergency_reply is not None:
         history.append(Message(role="user", content=user_text))
 
-        await websocket.send_json(
-            {"type": "assistant", "phase": "start"}
-        )
+        await websocket.send_json({"type": "assistant", "phase": "start"})
 
-        await websocket.send_json(
-            {"type": "assistant", "delta": emergency_reply}
-        )
+        await websocket.send_json({"type": "assistant", "delta": emergency_reply})
 
-        history.append(
-            Message(role="assistant", content=emergency_reply)
-        )
+        history.append(Message(role="assistant", content=emergency_reply))
 
         await _speak(websocket, tts, emergency_reply)
 
-        await websocket.send_json(
-            {"type": "assistant", "phase": "done"}
-        )
+        await websocket.send_json({"type": "assistant", "phase": "done"})
 
         return
     medication_reply = _medication_safety_reply(user_text)
@@ -574,22 +590,14 @@ async def _respond(
     if medication_reply is not None:
         history.append(Message(role="user", content=user_text))
 
-        await websocket.send_json(
-            {"type": "assistant", "phase": "start"}
-        )
-        await websocket.send_json(
-            {"type": "assistant", "delta": medication_reply}
-        )
+        await websocket.send_json({"type": "assistant", "phase": "start"})
+        await websocket.send_json({"type": "assistant", "delta": medication_reply})
 
-        history.append(
-            Message(role="assistant", content=medication_reply)
-        )
+        history.append(Message(role="assistant", content=medication_reply))
 
         await _speak(websocket, tts, medication_reply)
 
-        await websocket.send_json(
-            {"type": "assistant", "phase": "done"}
-        )
+        await websocket.send_json({"type": "assistant", "phase": "done"})
         return
 
     # First check whether the booking workflow should handle this turn.
@@ -597,42 +605,31 @@ async def _respond(
         booking_reply = booking_flow.handle(user_text)
 
         if booking_reply is not None:
-            history.append(
-                Message(role="user", content=user_text)
-            )
+            history.append(Message(role="user", content=user_text))
 
-            await websocket.send_json(
-                {"type": "assistant", "phase": "start"}
-            )
+            await websocket.send_json({"type": "assistant", "phase": "start"})
 
-            await websocket.send_json(
-                {"type": "assistant", "delta": booking_reply}
-            )
+            await websocket.send_json({"type": "assistant", "delta": booking_reply})
 
-            history.append(
-                Message(role="assistant", content=booking_reply)
-            )
+            history.append(Message(role="assistant", content=booking_reply))
 
             await _speak(websocket, tts, booking_reply)
 
-            await websocket.send_json(
-                {"type": "assistant", "phase": "done"}
-            )
+            await websocket.send_json({"type": "assistant", "phase": "done"})
             return
-
 
     # Keep appointment operations out of the free-form LLM.
     # BookingFlow is the only component allowed to confirm
     # booking, cancellation, or rescheduling operations.
     if booking_flow is not None:
         history[:] = [
-            message for message in history
+            message
+            for message in history
             if not (
                 message.role == "assistant"
                 and (
                     "Should I confirm this change?" in message.content
-                    or "your original appointment remains unchanged"
-                    in message.content.lower()
+                    or "your original appointment remains unchanged" in message.content.lower()
                 )
             )
         ]
@@ -642,22 +639,14 @@ async def _respond(
     if safety_reply is not None:
         history.append(Message(role="user", content=user_text))
 
-        await websocket.send_json(
-            {"type": "assistant", "phase": "start"}
-        )
-        await websocket.send_json(
-            {"type": "assistant", "delta": safety_reply}
-        )
+        await websocket.send_json({"type": "assistant", "phase": "start"})
+        await websocket.send_json({"type": "assistant", "delta": safety_reply})
 
-        history.append(
-            Message(role="assistant", content=safety_reply)
-        )
+        history.append(Message(role="assistant", content=safety_reply))
 
         await _speak(websocket, tts, safety_reply)
 
-        await websocket.send_json(
-            {"type": "assistant", "phase": "done"}
-        )
+        await websocket.send_json({"type": "assistant", "phase": "done"})
         return
 
     # Normal LLM conversation
@@ -665,26 +654,16 @@ async def _respond(
     history.append(Message(role="user", content=user_text))
 
     # Retrieve the latest question first to avoid topic contamination.
-    previous_user_messages = [
-        message.content
-        for message in history[:-1]
-        if message.role == "user"
-    ]
+    previous_user_messages = [message.content for message in history[:-1] if message.role == "user"]
 
     rag_start = time.monotonic()
     try:
-        rag_result = await asyncio.to_thread(
-            retrieve_context, user_text
-        )
+        rag_result = await asyncio.to_thread(retrieve_context, user_text)
 
         # Retry with conversation context only for ambiguous follow-ups.
         if not rag_result["found"] and previous_user_messages:
-            contextual_query = (
-                previous_user_messages[-1] + " " + user_text
-            )
-            rag_result = await asyncio.to_thread(
-                retrieve_context, contextual_query
-            )
+            contextual_query = previous_user_messages[-1] + " " + user_text
+            rag_result = await asyncio.to_thread(retrieve_context, contextual_query)
         logger.info(
             "LATENCY | RAG retrieval: %.0f ms",
             (time.monotonic() - rag_start) * 1000,
@@ -808,8 +787,7 @@ async def _respond(
         logger.warning("LLM response processing failed: %s", exc)
         if not "".join(parts).strip():
             fallback = (
-                "I'm sorry, I'm having trouble responding right now. "
-                "Could you please try again?"
+                "I'm sorry, I'm having trouble responding right now. Could you please try again?"
             )
             parts.append(fallback)
             await websocket.send_json({"type": "assistant", "delta": fallback})
@@ -818,7 +796,7 @@ async def _respond(
     finally:
         # Stop the worker if the response was interrupted or failed.
         if not worker.done():
-            if asyncio.current_task().cancelling():
+            if (current_task := asyncio.current_task()) is not None and current_task.cancelling():
                 worker.cancel()
             else:
                 try:

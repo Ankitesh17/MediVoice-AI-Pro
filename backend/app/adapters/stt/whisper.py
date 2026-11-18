@@ -1,4 +1,5 @@
 """Offline, utterance-based speech recognition using faster-whisper."""
+
 from __future__ import annotations
 
 import asyncio
@@ -38,8 +39,12 @@ class FasterWhisperSTT(STTAdapter):
         )
         self._model = WhisperModel(size, device="cpu", compute_type="int8")
         # Set WHISPER_LANGUAGE=auto to restore automatic language detection.
-        configured_language = language if language is not None else os.getenv("WHISPER_LANGUAGE", "en")
-        self._language = None if configured_language.lower() in ("auto", "none", "") else configured_language
+        configured_language = (
+            language if language is not None else os.getenv("WHISPER_LANGUAGE", "en")
+        )
+        self._language = (
+            None if configured_language.lower() in ("auto", "none", "") else configured_language
+        )
         self._initial_prompt = os.getenv("WHISPER_INITIAL_PROMPT", _DEFAULT_PROMPT)
         self._beam_size = max(1, int(os.getenv("WHISPER_BEAM_SIZE", "5")))
         self._emit_partials = os.getenv("WHISPER_PARTIALS", "0") == "1"

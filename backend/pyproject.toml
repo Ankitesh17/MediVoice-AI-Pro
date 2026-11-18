@@ -29,6 +29,7 @@ dev = [
 ]
 
 [tool.ruff]
+extend-exclude = ["booking_flow_backup.py", "booking_flow_before_intent_fix.py"]
 line-length = 100
 target-version = "py312"
 
@@ -46,3 +47,12 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
+
+[[tool.mypy.overrides]]
+module = [
+    "app.services.appointments_backup",
+    "app.services.booking_flow_backup",
+    "app.services.booking_flow_before_intent_fix",
+    "app.services.booking_flow_old",
+]
+ignore_errors = true

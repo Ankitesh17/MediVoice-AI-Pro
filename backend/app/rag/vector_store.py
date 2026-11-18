@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from typing import Any
 
 import faiss
 import numpy as np
@@ -45,7 +46,7 @@ def build_index() -> None:
     print("Index saved to:", INDEX_FILE)
 
 
-def search(query: str, top_k: int = 3) -> list[dict]:
+def search(query: str, top_k: int = 3) -> list[dict[str, Any]]:
     """Retrieve the most semantically similar chunks."""
     if not INDEX_FILE.exists() or not METADATA_FILE.exists():
         raise FileNotFoundError(
@@ -72,7 +73,7 @@ def search(query: str, top_k: int = 3) -> list[dict]:
 
     results = []
 
-    for score, idx in zip(scores[0], indices[0]):
+    for score, idx in zip(scores[0], indices[0], strict=True):
         if idx < 0:
             continue
 
