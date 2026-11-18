@@ -30,3 +30,17 @@ samples/
 
 # Local appointment database
 backend/medivoice.db
+
+# MediVoice local backups
+demo_backups/
+*.before_*
+*.bak
+backend/app/main_backup.py
+
+# Generated RAG vector index
+backend/faiss_index/
+
+# Local SQLite databases
+*.db
+*.db-shm
+*.db-wal

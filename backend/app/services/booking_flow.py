@@ -1,6 +1,8 @@
 import re
+from .date_parser import parse_natural_date
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+
 
 from .appointments import (
     book_appointment,
@@ -12,8 +14,28 @@ from .appointments import (
 
 
 def _affirmative(text: str) -> bool:
-    return bool(re.fullmatch(r"(?:yes|yeah|yep|sure|okay|ok|confirm|book it|go ahead)(?:[\s,.!]+(?:please|book it|confirm it|go ahead|cancel it))*[\s,.!]*", text))
+    text = text.lower().strip()
+    text = re.sub(r"[.!?,]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
 
+    positive = (
+        r"(?:yes|yeah|yep|sure|okay|ok|confirm|"
+        r"book it|go ahead|absolutely|correct|"
+        r"that's correct|that's right|that is correct|"
+        r"that is right|it's correct|it is correct)"
+    )
+
+    suffix = (
+        r"(?:please|book it|confirm it|go ahead|"
+        r"cancel it|correct|it's correct|it is correct|"
+        r"that's correct|that's right|that is correct|"
+        r"that is right)"
+    )
+
+    return bool(re.fullmatch(
+        rf"{positive}(?: {suffix})*",
+        text,
+    ))
 
 def _negative(text: str) -> bool:
     return bool(re.fullmatch(r"(?:no|no thanks|not yet|don't|do not)[\s,.!]*", text))
@@ -22,8 +44,10 @@ def _negative(text: str) -> bool:
 
 
 
+
 def _reference(text: str) -> int | None:
     """Extract a booking reference from natural speech."""
+
     words = {
         "zero": 0, "one": 1, "two": 2, "three": 3,
         "four": 4, "five": 5, "six": 6,
@@ -35,32 +59,44 @@ def _reference(text: str) -> int | None:
         "nineteen": 19, "twenty": 20,
     }
 
-    lower = text.lower().strip(" .,!?")
+    lower = text.lower().strip()
+    lower = re.sub(r"[.,!?]+", " ", lower)
+    lower = re.sub(r"\s+", " ", lower).strip()
 
-    # Don't mistake an appointment time for a reference.
+    # Never interpret an appointment time as a reference.
     if re.search(r"\b\d{1,2}\s*(?:am|pm)\b", lower):
         return None
 
-    # Remove common conversational prefixes.
+    # Accept natural conversational prefixes.
+    prefix = (
+        r"(?:(?:my|the)\s+)?"
+        r"(?:(?:appointment|booking)\s+){0,2}"
+        r"(?:reference|ref|number|id)"
+        r"(?:\s+number)?"
+        r"(?:\s+is)?"
+        r"\s*[:#]?\s*"
+    )
+
+    lower = re.sub(rf"^{prefix}", "", lower).strip()
+
+    # Also accept "it's 11" and "it is eleven".
     lower = re.sub(
-        r"^(?:my (?:appointment )?(?:booking )?"
-        r"(?:reference|number|id)\s*(?:number\s*)?"
-        r"(?:is\s*)?|"
-        r"(?:the )?(?:booking |appointment )?"
-        r"(?:reference|ref|number|id)\s*"
-        r"(?:number\s*)?(?:is\s*)?|"
-        r"it(?:'s| is)\s+)",
+        r"^it(?:'s| is)\s+",
         "",
-        lower,
-    ).strip(" #:.,!?")
+        lower
+    ).strip()
 
-    if lower.isdigit():
-        return int(lower)
+    # Accept "number eleven" after conversational prefixes.
+    lower = re.sub(r"^(?:number|no)\s+", "", lower).strip()
 
-    if lower in words:
-        return words[lower]
+    # Accept digits of any length.
+    if re.fullmatch(r"\d+", lower):
+        value = int(lower)
+        return value if value > 0 else None
 
-    return None
+    # Accept spoken numbers from one to twenty.
+    value = words.get(lower)
+    return value if value is not None and value > 0 else None
 
 
 
@@ -123,7 +159,7 @@ class BookingFlow:
             # Allow new requests to be processed normally
 
 
-        
+
         # Global polite conversation ending.
         # Do not treat "no" as a goodbye because it is
         # also used to decline booking changes.
@@ -181,7 +217,7 @@ class BookingFlow:
                     "else I can help you with today?"
                 )
 
-            
+
             if re.search(
                 r"\b(reschedul\w*|re[\s-]?schedul\w*|"
                 r"move|change|shift|postpone)\b"
@@ -214,9 +250,24 @@ class BookingFlow:
                     return self._manage_reference(ref)
                 return "Certainly. What is your appointment booking reference?"
 
-            if re.search(r"\b(book|schedule|make)\b.*\bappointment\b|\bappointment\b.*\b(book|schedule)\b", lower):
+
+            if (
+                lower in {
+                    "book",
+                    "book it",
+                    "book an appointment",
+                    "schedule an appointment",
+                    "make an appointment",
+                }
+                or re.search(
+                    r"\b(book|schedule|make)\b.*\bappointment\b"
+                    r"|\bappointment\b.*\b(book|schedule)\b",
+                    lower,
+                )
+            ):
                 self.stage = "name"
                 return "Certainly. May I have your full name, please?"
+
             return None
 
         # Do not interpret a request to cancel an existing appointment as
@@ -246,7 +297,10 @@ class BookingFlow:
 
             expected = appointment["patient_name"].strip()
             # A simple name match is for a fictional demo only, not real authentication.
-            matches = name.casefold() == expected.casefold()
+            matches = (
+                re.sub(r"\s+", "", name).casefold()
+                == re.sub(r"\s+", "", expected).casefold()
+                )
             if not matches:
                 self.name_attempts += 1
                 if self.name_attempts >= 3:
@@ -314,35 +368,8 @@ class BookingFlow:
                 )
 
             today = date.today()
-            parsed = None
-            if "tomorrow" in lower:
-                parsed = today + timedelta(days=1)
-            elif "today" in lower:
-                parsed = today
-            else:
-                iso = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", lower)
-                if iso:
-                    try:
-                        parsed = date.fromisoformat(iso.group(1))
-                    except ValueError:
-                        pass
-                if parsed is None:
-                    
-                    natural = re.search(
-                        r"\b(\d{1,2})(?:st|nd|rd|th)?[\s,]+"
-                        r"(january|february|march|april|may|june|july|august|"
-                        r"september|october|november|december)(?:[\s,]+(\d{4}))?\b",
-                        lower,
-                    )
+            parsed = parse_natural_date(text, today=today)
 
-                    if natural:
-                        day = int(natural.group(1))
-                        month = datetime.strptime(natural.group(2), "%B").month
-                        year = int(natural.group(3) or today.year)
-                        try:
-                            parsed = date(year, month, day)
-                        except ValueError:
-                            pass
             if parsed is None:
                 return "Please say the new date, for example, 20 November 2026."
             if parsed < today:
@@ -417,38 +444,84 @@ class BookingFlow:
             self.reset()
             return "I've stopped this booking request. No appointment was created."
 
+
         if self.stage == "name":
-            name = re.sub(r"^(my name is|i am|i'm|it's|this is)\s+", "", text, flags=re.IGNORECASE).strip(" .,!?")
+            name = re.sub(
+                r"^(?:my (?:full )?name is|"
+                r"the (?:patient(?:'s)? )?name is|"
+                r"i am|i'm|it's|this is)\s+",
+                "",
+                text,
+                flags=re.IGNORECASE,
+            ).strip(" .,!?")
+
             if len(name) < 2 or len(name) > 80:
                 return "Could you please tell me your full name?"
+
             self.name = name
-            self.stage = "date"
-            return "Thank you. Which date would you prefer?"
+            self.stage = "name_confirm"
+
+            return (
+                f"I heard your name as {self.name}. "
+                "Is that correct? Please say yes or no."
+            )
+
+        if self.stage == "name_confirm":
+            if _affirmative(lower):
+                self.stage = "date"
+                return "Thank you. Which date would you prefer?"
+
+            if _negative(lower):
+                self.name = ""
+                self.stage = "name_spell"
+                return (
+                    "No problem. Please spell your full name "
+                    "slowly, one letter at a time. "
+                    "You can say the first and last names separately."
+                )
+
+            return (
+                f"I heard {self.name}. "
+                "Please say yes if that is correct, "
+                "or no if you would like to correct it."
+            )
+
+        if self.stage == "name_spell":
+            spoken = text.strip()
+
+            # Accept letters separated by spaces or hyphens.
+            letters = re.findall(r"[A-Za-z]", spoken)
+
+            # Only accept a spelling if every token is
+            # a single letter, separated by spaces or hyphens.
+            tokens = re.split(r"[\s-]+", spoken.strip(" .,!?"))
+            valid = (
+                len(tokens) >= 2
+                and all(
+                    len(token) == 1 and token.isalpha()
+                    for token in tokens
+                )
+            )
+
+            if not valid:
+                return (
+                    "I couldn't reliably understand the spelling. "
+                    "Please say one letter at a time, "
+                    "with a short pause between letters."
+                )
+
+            self.name = "".join(letters).title()
+            self.stage = "name_confirm"
+
+            return (
+                f"I have spelled your name as {self.name}. "
+                "Is that correct?"
+            )
+
 
         if self.stage == "date":
             today = date.today()
-            parsed = None
-            if "tomorrow" in lower:
-                parsed = today + timedelta(days=1)
-            elif "today" in lower:
-                parsed = today
-            else:
-                match = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", text)
-                if match:
-                    try:
-                        parsed = date.fromisoformat(match.group(1))
-                    except ValueError:
-                        pass
-                if parsed is None:
-                    match = re.search(r"\b(\d{1,2})(?:st|nd|rd|th)?\s+(january|february|march|april|may|june|july|august|september|october|november|december)(?:\s+(\d{4}))?\b", lower)
-                    if match:
-                        day = int(match.group(1))
-                        month = datetime.strptime(match.group(2), "%B").month
-                        year = int(match.group(3) or today.year)
-                        try:
-                            parsed = date(year, month, day)
-                        except ValueError:
-                            pass
+            parsed = parse_natural_date(text, today=today)
             if parsed is None:
                 return "Please say the appointment date, for example, 17 November 2026."
             if parsed < today:
@@ -482,16 +555,46 @@ class BookingFlow:
             self.stage = "reason"
             return "What is the reason for your appointment?"
 
+
         if self.stage == "reason":
             if not text:
                 return "Could you briefly describe the reason for your visit?"
-            clean_reason = re.sub(r"^(?:the reason for (?:my |the )?appointment is|the reason is|my reason is|i need an appointment for)\s*", "", text, flags=re.IGNORECASE).strip(" .,!?")
+
+            clean_reason = re.sub(
+                r"^(?:the reason for (?:my |the )?appointment is|"
+                r"the reason is|my reason is|"
+                r"i need an appointment for)\s*",
+                "",
+                text,
+                flags=re.IGNORECASE,
+            ).strip(" .,!?")
+
             if not clean_reason:
                 return "Could you briefly describe the reason for your visit?"
+
+            if re.fullmatch(
+                r"(?:thank you|thanks|thank you so much|"
+                r"thanks a lot|okay|ok|yes|no|"
+                r"hello|hi|bye|goodbye|cheers|"
+                r"please|sure|that's all)"
+                r"[\s,.!]*",
+                clean_reason,
+                flags=re.IGNORECASE,
+            ):
+                return (
+                    "Could you briefly tell me the reason for "
+                    "your appointment, such as a general "
+                    "consultation or routine check-up?"
+                )
+
             self.reason = clean_reason[:200]
             self.stage = "confirm"
-            return (f"I have {self.name}, on {self.appointment_date}, at {self.appointment_time}, "
-                    f"for {self.reason}. Shall I book this demo appointment?")
+
+            return (
+                f"I have {self.name}, on {self.appointment_date}, "
+                f"at {self.appointment_time}, for {self.reason}. "
+                "Shall I book this demo appointment?"
+            )
 
         if self.stage == "confirm":
             if _affirmative(lower):

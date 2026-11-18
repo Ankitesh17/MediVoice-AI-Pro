@@ -1,25 +1,60 @@
-import Link from "next/link";
-
 import { TranscribeDemo } from "./transcribe-demo";
 
 export default function Home() {
   return (
-    <main
-      style={{
-        maxWidth: 720,
-        margin: "0 auto",
-        padding: "48px 24px",
-      }}
-    >
-      <h1 style={{ fontSize: 28, marginBottom: 4 }}>realtime-voice-agent-demo</h1>
-      <p style={{ color: "#9aa0a6", marginTop: 0 }}>
-        mic &rarr; STT &rarr; LLM &rarr; TTS &rarr; spoken reply &nbsp;·&nbsp;
-        talk or live translation &nbsp;·&nbsp;
-        <Link href="/bench" style={{ color: "#7dd3fc" }}>
-          TTS eval harness →
-        </Link>
-      </p>
-      <TranscribeDemo />
+    <main className="medivoice-app">
+      <header className="medivoice-header">
+        <div className="medivoice-brand">
+          <div className="medivoice-logo" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+            <span />
+            <span />
+          </div>
+
+          <div>
+            <div className="medivoice-brand-name">
+              MediVoice <span>AI Pro</span>
+            </div>
+            <div className="medivoice-brand-caption">
+              INTELLIGENT HEALTHCARE ASSISTANT
+            </div>
+          </div>
+        </div>
+
+        <div className="medivoice-header-label">
+          <span className="medivoice-header-dot" />
+          AI-POWERED RECEPTION
+        </div>
+      </header>
+
+      <div className="medivoice-content">
+        <div className="medivoice-intro">
+          <div className="medivoice-eyebrow">
+            YOUR VOICE. OUR INTELLIGENCE.
+          </div>
+
+          <h1>
+            Healthcare conversations,
+            <br />
+            <span>beautifully simple.</span>
+          </h1>
+
+          <p>
+            Meet your intelligent virtual receptionist.
+            Ask questions, manage appointments, and get
+            the information you need — naturally.
+          </p>
+        </div>
+
+        <TranscribeDemo />
+      </div>
+
+      <footer className="medivoice-footer">
+        <span>MediVoice AI Pro</span>
+        <span>Fictional clinic demonstration · Not for medical emergencies</span>
+      </footer>
     </main>
   );
 }

@@ -18,17 +18,8 @@ _PARTIAL_EVERY_MS = 700
 
 # A hint, not a restriction: Whisper can still recognize other phrases.
 _DEFAULT_PROMPT = (
-    "A conversation with a UK GP clinic receptionist. "
-    "Patients book, check, cancel, or reschedule appointments. "
-    "Common demo patient names include Ankit. "
-    "Patients may say booking reference five, reference number five, "
-    "my booking reference is five, or number five. "
-    "Booking reference numbers: one, two, three, four, five, "
-    "six, seven, eight, nine, ten. "
-    "Appointment times include 9 AM, 10 AM, 11 AM, 2 PM, "
-    "3 PM, and 4 PM. "
-    "Dates include November, December, Monday, Tuesday, "
-    "Wednesday, Thursday, and Friday."
+    "A patient speaking to a UK GP receptionist about "
+    "appointments, prescriptions, or clinic information."
 )
 
 
@@ -39,6 +30,12 @@ class FasterWhisperSTT(STTAdapter):
         from faster_whisper import WhisperModel
 
         size = model_size or os.getenv("WHISPER_MODEL") or "base"
+        import logging
+
+        logging.getLogger("realtime-voice-agent-demo").info(
+            "STT | Loading Whisper model=%s, device=cpu, compute_type=int8",
+            size,
+        )
         self._model = WhisperModel(size, device="cpu", compute_type="int8")
         # Set WHISPER_LANGUAGE=auto to restore automatic language detection.
         configured_language = language if language is not None else os.getenv("WHISPER_LANGUAGE", "en")
@@ -104,7 +101,19 @@ class FasterWhisperSTT(STTAdapter):
                 yield Transcript(text=text, is_final=True)
 
     async def _run(self, audio: np.ndarray) -> str:
-        return await asyncio.to_thread(self._transcribe_sync, audio)
+        import logging
+        import time
+
+        start = time.monotonic()
+        text = await asyncio.to_thread(self._transcribe_sync, audio)
+
+        logging.getLogger("realtime-voice-agent-demo").info(
+            "LATENCY | Whisper transcription: %.0f ms (%.2f s audio)",
+            (time.monotonic() - start) * 1000,
+            len(audio) / SAMPLE_RATE,
+        )
+
+        return text
 
     def _transcribe_sync(self, audio: np.ndarray) -> str:
         segments, _ = self._model.transcribe(

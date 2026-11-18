@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { AuraOrb } from "./aura-orb";
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8000/ws";
 const TARGET_SAMPLE_RATE = 16000;
@@ -300,7 +301,33 @@ export function TranscribeDemo() {
   const live = status === "live";
 
   return (
-    <section style={{ marginTop: 32 }}>
+    <section className="aura-voice-section">
+      <div className="aura-voice-hero">
+        <AuraOrb
+          active={status === "live"}
+          speaking={speaking}
+          level={level}
+        />
+
+        <div className="aura-voice-status">
+          <span className={`aura-status-dot aura-status-${status}`} />
+          {speaking
+            ? "MediVoice is speaking"
+            : status === "live"
+              ? "Listening to you"
+              : status === "connecting"
+                ? "Connecting your microphone"
+                : status === "error"
+                  ? "Connection unavailable"
+                  : "Ready when you are"}
+        </div>
+
+        <p className="aura-voice-hint">
+          {status === "live"
+            ? "Speak naturally. I'm here to help."
+            : "Start a conversation whenever you're ready."}
+        </p>
+      </div>
       <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
         <button
           onClick={live || status === "connecting" ? stop : start}
@@ -336,6 +363,12 @@ export function TranscribeDemo() {
         )}
       </div>
 
+      <details className="aura-settings">
+        <summary className="aura-settings-trigger">
+          <span>⚙ Advanced settings</span>
+          <span className="aura-settings-chevron">⌄</span>
+        </summary>
+        <div className="aura-settings-content">
       {/* Controls — usable before AND during a session. Choose before Start;
           change live afterwards. */}
       <div
@@ -396,56 +429,62 @@ export function TranscribeDemo() {
         />
       </div>
 
-      <div style={{ marginTop: 24 }}>
-        <div style={{ fontSize: 13, color: "#9aa0a6", marginBottom: 6 }}>Mic level</div>
-        <div style={{ height: 10, background: "#1c2128", borderRadius: 5 }}>
-          <div
-            style={{
-              height: "100%",
-              width: `${level * 100}%`,
-              background: "#22c55e",
-              borderRadius: 5,
-              transition: "width 60ms linear",
-            }}
-          />
         </div>
-      </div>
+      </details>
 
-      <div
-        style={{
-          marginTop: 24,
-          minHeight: 160,
-          padding: 16,
-          borderRadius: 12,
-          background: "#11151c",
-          border: "1px solid #1c2128",
-          lineHeight: 1.6,
-        }}
-      >
-        {turns.length === 0 && !partial && (
-          <p style={{ color: "#6b7280", margin: 0 }}>
-            {mode === "translate"
-              ? `Speak in ${languages[source] ?? source}; the translation into ${
-                  languages[target] ?? target
-                } is spoken back.`
-              : "Speak, and your words appear here. When you pause, the assistant replies — streamed token by token."}
-          </p>
-        )}
-        {turns.map((turn, i) => (
-          <p
-            key={i}
-            style={{
-              margin: "0 0 10px",
-              color: turn.role === "assistant" ? "#7dd3fc" : "#e8eaed",
-            }}
-          >
-            <span style={{ color: "#6b7280", fontSize: 12, marginRight: 8 }}>
-              {turn.role === "assistant" ? "AI" : "You"}
-            </span>
-            {turn.text || (turn.role === "assistant" ? "…" : "")}
-          </p>
-        ))}
-        {partial && <p style={{ margin: 0, color: "#9aa0a6" }}>{partial}…</p>}
+      <div className="aura-conversation">
+        <div className="aura-conversation-header">
+          <div className="aura-conversation-title">
+            <span className="aura-conversation-icon">✦</span>
+            <span>Conversation</span>
+          </div>
+          <span className="aura-conversation-tag">VOICE SESSION</span>
+        </div>
+
+        <div className="aura-conversation-messages" aria-live="polite">
+          {turns.length === 0 && !partial && (
+            <div className="aura-conversation-empty">
+              <div className="aura-empty-symbol">✧</div>
+              <h3>Your conversation starts here</h3>
+              <p>
+                {mode === "translate"
+                  ? `Speak in ${languages[source] ?? source}. Your words will be translated into ${languages[target] ?? target}.`
+                  : "Tap Start mic and speak naturally. Your conversation will appear here."}
+              </p>
+            </div>
+          )}
+
+          {turns.map((turn, i) => (
+            <div
+              key={i}
+              className={`aura-message aura-message-${turn.role}`}
+            >
+              {turn.role === "assistant" && (
+                <div className="aura-message-avatar" aria-hidden="true">
+                  ✦
+                </div>
+              )}
+
+              <div className="aura-message-body">
+                <div className="aura-message-label">
+                  {turn.role === "assistant" ? "MediVoice AI" : "You"}
+                </div>
+                <div className="aura-message-text">
+                  {turn.text || (turn.role === "assistant" ? "…" : "")}
+                </div>
+              </div>
+            </div>
+          ))}
+
+          {partial && (
+            <div className="aura-message aura-message-user aura-message-partial">
+              <div className="aura-message-body">
+                <div className="aura-message-label">You · Listening</div>
+                <div className="aura-message-text">{partial}…</div>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       {error && <p style={{ color: "#f87171", marginTop: 16 }}>⚠ {error}</p>}

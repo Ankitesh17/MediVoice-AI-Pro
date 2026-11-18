@@ -1,0 +1,47 @@
+# MediVoice Family Practice
+DEMO KNOWLEDGE BASE — FICTIONAL GP SURGERY
+
+## Opening Hours
+The practice is open Monday to Friday from 8:00 AM to 6:30 PM.
+The practice is closed on Saturdays, Sundays, and UK bank holidays.
+
+## Appointment Booking
+Patients can request routine GP appointments by telephone or through the MediVoice AI receptionist.
+Appointment availability depends on the practice schedule.
+An appointment is confirmed only after the booking system successfully records it.
+Patients should provide their full name, preferred date, preferred time, and reason for the appointment.
+
+## Cancelling and Rescheduling
+Patients can request appointment cancellations or rescheduling through MediVoice AI.
+The system must verify the relevant appointment before making changes.
+Patients should cancel as early as possible if they cannot attend.
+
+## Repeat Prescriptions
+Patients can request repeat prescriptions through the practice's normal prescription service.
+Requests should be submitted at least two working days before medication runs out.
+Prescription requests require review and approval by an authorised clinician.
+MediVoice AI cannot prescribe medication or approve prescriptions.
+
+## New Patient Registration
+New patients can contact the reception team to ask about registration.
+Registration requirements and eligibility must be confirmed by practice staff.
+
+## Test Results
+Patients should contact the practice for information about test results.
+Only authorised healthcare professionals can interpret results and provide medical advice.
+MediVoice AI cannot interpret clinical test results.
+
+## Medical Emergencies
+For a life-threatening medical emergency in the UK, call 999.
+For urgent medical help that is not life-threatening, contact NHS 111.
+MediVoice AI is an administrative assistant and does not provide diagnosis, treatment recommendations, or emergency medical assessment.
+
+## Patient Privacy
+Patients should only share information necessary for their administrative request.
+Patient information must be handled according to applicable privacy and data protection requirements.
+MediVoice AI must not disclose another patient's appointment or personal information.
+
+## AI Receptionist Limitations
+MediVoice AI can answer administrative questions using approved practice information.
+MediVoice AI must not invent practice policies, opening hours, available appointment slots, or clinical advice.
+If information is unavailable, the assistant should explain that it cannot confirm the answer and direct the patient to practice staff.
