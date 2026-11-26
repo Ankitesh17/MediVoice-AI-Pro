@@ -1,3 +1,4 @@
+import os
 import sqlite3
 from datetime import date, datetime
 from pathlib import Path
@@ -8,13 +9,18 @@ DB_PATH = Path(__file__).resolve().parents[2] / "medivoice.db"
 AVAILABLE_TIMES = ("09:00", "10:00", "11:00", "14:00", "15:00", "16:00")
 
 
+def _database_path() -> Path:
+    return Path(os.getenv("MEDIVOICE_DB_PATH") or DB_PATH).expanduser()
+
+
 def connect() -> sqlite3.Connection:
-    connection = sqlite3.connect(DB_PATH, timeout=10)
+    connection = sqlite3.connect(_database_path(), timeout=10)
     connection.execute("PRAGMA busy_timeout = 10000")
     return connection
 
 
 def init_db() -> None:
+    _database_path().parent.mkdir(parents=True, exist_ok=True)
     with connect() as db:
         db.execute("""
             CREATE TABLE IF NOT EXISTS appointments (

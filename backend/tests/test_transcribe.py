@@ -10,7 +10,9 @@ import json
 from collections.abc import AsyncIterator
 
 import pytest
+from fastapi import WebSocket
 from fastapi.testclient import TestClient
+from starlette.types import Message as ASGIMessage
 
 import app.main as main
 from app.adapters.llm import create_llm_adapter
@@ -19,6 +21,15 @@ from app.adapters.stt import create_stt_adapter
 from app.adapters.stt.base import STTAdapter, Transcript
 from app.adapters.tts import create_tts_adapter
 from app.adapters.tts.base import TTSAdapter
+
+
+@pytest.fixture(autouse=True)
+def stub_retrieval(monkeypatch: pytest.MonkeyPatch) -> None:
+    # WebSocket wiring tests should run without native ML libraries doing inference.
+    monkeypatch.setattr(
+        main, "retrieve_context",
+        lambda _: {"found": True, "context": "Demo clinic reference", "sources": []},
+    )
 
 
 class StubSTT(STTAdapter):
@@ -117,6 +128,7 @@ def test_ws_full_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert stub_llm.seen is not None
     assert stub_llm.seen[-1].content == "hello world"
+    assert any("Demo clinic reference" in msg.content for msg in stub_llm.seen)
     assert stub_tts.spoken == ["Hi there!"]
 
 
@@ -289,3 +301,242 @@ def test_factory_default_is_whisper(monkeypatch: pytest.MonkeyPatch) -> None:
     adapter = stt_pkg.create_stt_adapter()
     assert adapter.name == "whisper"
     assert constructed == ["whisper"]
+
+def test_disconnect_on_ready_closes_initialized_adapters(monkeypatch: pytest.MonkeyPatch) -> None:
+    closed = []
+
+    def tracked(adapter):
+        async def close() -> None:
+            closed.append(adapter.name)
+        monkeypatch.setattr(adapter, "aclose", close)
+        return lambda: adapter
+
+    monkeypatch.setattr(main, "create_stt_adapter", tracked(StubSTT()))
+    monkeypatch.setattr(main, "create_llm_adapter", tracked(StubLLM()))
+    monkeypatch.setattr(main, "create_tts_adapter", tracked(StubTTS()))
+
+    messages: asyncio.Queue[ASGIMessage] = asyncio.Queue()
+    messages.put_nowait({"type": "websocket.connect"})
+
+    async def send(message: ASGIMessage) -> None:
+        if message["type"] == "websocket.send":
+            assert '"value":"ready"' in message["text"]
+            # Starlette maps this transport failure to WebSocketDisconnect(1006).
+            raise OSError("peer disconnected")
+
+    ws = WebSocket({"type": "websocket"}, messages.get, send)
+    asyncio.run(asyncio.wait_for(main.ws_transcribe(ws), timeout=3))
+    assert closed == ["stub-tts", "stub-llm", "stub-stt"]
+
+
+@pytest.mark.parametrize("disconnect_from_send", [False, True])
+def test_disconnect_cancels_active_generation(
+    monkeypatch: pytest.MonkeyPatch, disconnect_from_send: bool,
+) -> None:
+    async def scenario() -> None:
+        messages: asyncio.Queue[ASGIMessage] = asyncio.Queue()
+        generation_closed = asyncio.Event()
+        speech_closed = asyncio.Event()
+        messages.put_nowait({"type": "websocket.connect"})
+        messages.put_nowait({"type": "websocket.receive", "bytes": b"\0\0"})
+
+        class StreamingLLM(StubLLM):
+            async def stream(self, messages: list[Message]) -> AsyncIterator[str]:
+                try:
+                    while True:
+                        yield "Sentence. "
+                finally:
+                    generation_closed.set()
+
+        class StreamingTTS(StubTTS):
+            async def synthesize(self, text: str) -> AsyncIterator[bytes]:
+                try:
+                    if not disconnect_from_send:
+                        messages.put_nowait({"type": "websocket.disconnect", "code": 1006})
+                        await asyncio.Event().wait()
+                    yield b"\0\0"
+                finally:
+                    speech_closed.set()
+
+        monkeypatch.setattr(main, "create_stt_adapter", StubSTT)
+        monkeypatch.setattr(main, "create_llm_adapter", StreamingLLM)
+        monkeypatch.setattr(main, "create_tts_adapter", StreamingTTS)
+
+        async def send(message: ASGIMessage) -> None:
+            if message.get("bytes"):
+                raise OSError("peer disconnected")
+
+        ws = WebSocket({"type": "websocket"}, messages.get, send)
+        await asyncio.wait_for(main.ws_transcribe(ws), timeout=3)
+        await asyncio.wait_for(generation_closed.wait(), timeout=3)
+        await asyncio.wait_for(speech_closed.wait(), timeout=3)
+
+    asyncio.run(scenario())
+
+
+def test_disconnect_during_provider_load_skips_ready(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def scenario() -> None:
+        from threading import Event
+
+        loading = asyncio.Event()
+        disconnected = asyncio.Event()
+        release = Event()
+        loop = asyncio.get_running_loop()
+        sent = []
+        stt_closed = asyncio.Event()
+
+        class SlowSTT(StubSTT):
+            async def aclose(self) -> None:
+                stt_closed.set()
+
+        def load() -> SlowSTT:
+            loop.call_soon_threadsafe(loading.set)
+            assert release.wait(timeout=3)
+            return SlowSTT()
+
+        async def receive() -> ASGIMessage:
+            if not sent:
+                return {"type": "websocket.connect"}
+            await loading.wait()
+            disconnected.set()
+            return {"type": "websocket.disconnect", "code": 1006}
+
+        async def send(message: ASGIMessage) -> None:
+            sent.append(message["type"])
+
+        monkeypatch.setattr(main, "create_stt_adapter", load)
+        ws = WebSocket({"type": "websocket"}, receive, send)
+        session = asyncio.create_task(main.ws_transcribe(ws))
+        try:
+            await asyncio.wait_for(disconnected.wait(), timeout=2)
+        finally:
+            release.set()
+        await asyncio.wait_for(session, timeout=2)
+        assert stt_closed.is_set()
+        assert sent == ["websocket.accept"]
+
+    asyncio.run(scenario())
+
+
+def test_uncertain_booking_answer_keeps_stage_and_skips_rag(monkeypatch) -> None:
+    def unexpected(*_args):
+        pytest.fail("An uncertain booking input must not reach retrieval")
+
+    monkeypatch.setattr(main, "retrieve_context", unexpected)
+    flow = main.BookingFlow(stage="reschedule_confirm", appointment_id=42)
+    ws = _FakeWS()
+    llm = StubLLM()
+    history = []
+    asyncio.run(main._respond(ws, llm, StubTTS(), history, "yes", flow, uncertain=True))
+
+    assert flow.stage == "reschedule_confirm"
+    assert flow.appointment_id == 42
+    assert llm.seen is None
+    assert "repeat" in history[-1].content
+
+
+def test_greeting_keeps_history_without_rag_or_llm(monkeypatch) -> None:
+    def unexpected(*_args):
+        pytest.fail("A greeting must not reach retrieval")
+
+    monkeypatch.setattr(main, "retrieve_context", unexpected)
+    ws = _FakeWS()
+    llm = StubLLM()
+    history = []
+    asyncio.run(main._respond(ws, llm, StubTTS(), history, "Good morning!", main.BookingFlow()))
+
+    assert llm.seen is None
+    assert [message.role for message in history] == ["user", "assistant"]
+    assert "help" in history[-1].content
+
+
+def test_sentence_split_leaves_titles_and_decimals_together() -> None:
+    assert main._take_sentence("Ask Dr.") == ("", "Ask Dr.")
+    assert main._take_sentence("Ask Dr. Shah about the 2.5 value.") == (
+        "Ask Dr. Shah about the 2.5 value.", "",
+    )
+
+
+def test_interrupt_is_acknowledged_after_audio_finishes(monkeypatch) -> None:
+    async def scenario() -> None:
+        messages: asyncio.Queue[ASGIMessage] = asyncio.Queue()
+        messages.put_nowait({"type": "websocket.connect"})
+        messages.put_nowait({"type": "websocket.receive", "bytes": b"\x00\x00"})
+        acknowledged = asyncio.Event()
+
+        class ListeningSTT(StubSTT):
+            async def transcribe(self, audio: AsyncIterator[bytes]) -> AsyncIterator[Transcript]:
+                async for _ in audio:
+                    yield Transcript("hello", True)
+
+        monkeypatch.setattr(main, "create_stt_adapter", ListeningSTT)
+        monkeypatch.setattr(main, "create_llm_adapter", StubLLM)
+        monkeypatch.setattr(main, "create_tts_adapter", StubTTS)
+
+        async def send(message: ASGIMessage) -> None:
+            if message["type"] != "websocket.send" or "text" not in message:
+                return
+            payload = json.loads(message["text"])
+            if payload.get("type") != "assistant":
+                return
+            if payload.get("phase") == "done":
+                messages.put_nowait({"type": "websocket.receive", "text": '{"type":"interrupt"}'})
+            if payload.get("phase") == "interrupted":
+                acknowledged.set()
+                messages.put_nowait({"type": "websocket.disconnect", "code": 1000})
+
+        ws = WebSocket({"type": "websocket"}, messages.get, send)
+        await asyncio.wait_for(main.ws_transcribe(ws), timeout=3)
+        assert acknowledged.is_set()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("model", "configured", "expected"),
+    [
+        ("gemini-2.5-flash", None, "none"),
+        ("gemini-2.5-flash", "low", "low"),
+        ("gemini-2.5-flash", "default", None),
+        ("gemini-custom", None, None),
+    ],
+)
+def test_gemini_streaming_reasoning_setting(monkeypatch, model, configured, expected) -> None:
+    from types import SimpleNamespace
+
+    from openai import omit
+
+    from app.adapters.llm.gemini import GeminiLLM
+
+    async def run() -> None:
+        if configured is None:
+            monkeypatch.delenv("GEMINI_REASONING_EFFORT", raising=False)
+        else:
+            monkeypatch.setenv("GEMINI_REASONING_EFFORT", configured)
+
+        class Completion:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+            async def __aiter__(self):
+                yield SimpleNamespace(choices=[])
+                yield SimpleNamespace(choices=[SimpleNamespace(
+                    delta=SimpleNamespace(content="Hello."),
+                )])
+
+        async def create(**kwargs):
+            assert kwargs["model"] == model and kwargs["stream"] is True
+            assert kwargs["reasoning_effort"] == (expected if expected else omit)
+            return Completion()
+
+        gemini = GeminiLLM(api_key="unit-test-placeholder", model=model)
+        monkeypatch.setattr(gemini._client.chat.completions, "create", create)
+        try:
+            assert [part async for part in gemini.stream([])] == ["Hello."]
+        finally:
+            await gemini.aclose()
+
+    asyncio.run(run())

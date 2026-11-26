@@ -20,6 +20,11 @@ __all__ = ["SAMPLE_RATE", "TTSAdapter", "create_tts_adapter", "TTS_PROVIDERS"]
 TTS_PROVIDERS = ["piper", "inworld"]
 
 
+def preload_tts_model() -> None:
+    if (os.getenv("TTS_PROVIDER") or "piper").lower() == "piper":
+        create_tts_adapter("piper")
+
+
 def create_tts_adapter(provider: str | None = None) -> TTSAdapter:
     name = (provider or os.getenv("TTS_PROVIDER") or "piper").lower()
     if name == "inworld":

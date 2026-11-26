@@ -17,8 +17,9 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterator, Iterable, Iterator
 from pathlib import Path
+from threading import Lock
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -29,6 +30,8 @@ if TYPE_CHECKING:
     from piper import AudioChunk, PiperVoice
 
 _DEFAULT_VOICE = "en_US-lessac-medium"
+_voice_lock = Lock()
+_voices: dict[Path, PiperVoice] = {}
 _VOICE_DIR = Path.home() / ".local" / "share" / "piper-voices"
 
 
@@ -40,28 +43,29 @@ class PiperTTS(TTSAdapter):
         from piper.download_voices import download_voice
 
         name = voice or os.getenv("PIPER_VOICE") or _DEFAULT_VOICE
-        _VOICE_DIR.mkdir(parents=True, exist_ok=True)
-        model = _VOICE_DIR / f"{name}.onnx"
-        if not model.exists():
-            # First run: fetch the ONNX voice (and its .json) once.
-            download_voice(name, _VOICE_DIR)
-        self._voice: PiperVoice = PiperVoice.load(str(model))
+        voice_dir = Path(os.getenv("PIPER_VOICE_DIR") or _VOICE_DIR).expanduser()
+        voice_dir.mkdir(parents=True, exist_ok=True)
+        model = voice_dir / f"{name}.onnx"
+        with _voice_lock:
+            if model not in _voices:
+                if not model.is_file() or not model.with_suffix(".onnx.json").is_file():
+                    download_voice(name, voice_dir)
+                _voices[model] = PiperVoice.load(str(model))
+            self._voice = _voices[model]
         self._native_rate = int(self._voice.config.sample_rate)
 
     async def synthesize(self, text: str) -> AsyncIterator[bytes]:
-        # Piper is synchronous/CPU-bound — run it off the event loop and hand
-        # back resampled 16 kHz PCM chunks.
-        chunks = await asyncio.to_thread(self._render, text)
-        for pcm in chunks:
+        # Piper yields individual sentences. Advance the iterator in a worker
+        # so a long booking response can play its first sentence immediately.
+        stream = self._render(text)
+        while (pcm := await asyncio.to_thread(next, stream, None)) is not None:
             yield pcm
 
-    def _render(self, text: str) -> list[bytes]:
-        out: list[bytes] = []
+    def _render(self, text: str) -> Iterator[bytes]:
         stream: Iterable[AudioChunk] = self._voice.synthesize(text)
         for chunk in stream:
             pcm16 = np.frombuffer(chunk.audio_int16_bytes, dtype=np.int16)
-            out.append(_resample_int16(pcm16, self._native_rate, SAMPLE_RATE))
-        return out
+            yield _resample_int16(pcm16, self._native_rate, SAMPLE_RATE)
 
 
 def _resample_int16(pcm: np.ndarray, src_rate: int, dst_rate: int) -> bytes:
