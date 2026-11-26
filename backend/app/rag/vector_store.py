@@ -1,4 +1,5 @@
 import json
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -40,27 +41,34 @@ def build_index() -> None:
         encoding="utf-8",
     )
 
+    _load_index.cache_clear()
+
     print("SUCCESS: FAISS index created!")
     print("Total vectors:", index.ntotal)
     print("Vector dimensions:", dimension)
     print("Index saved to:", INDEX_FILE)
 
 
-def search(query: str, top_k: int = 3) -> list[dict[str, Any]]:
-    """Retrieve the most semantically similar chunks."""
-    if not INDEX_FILE.exists() or not METADATA_FILE.exists():
-        raise FileNotFoundError(
-            "FAISS index not found. Build the index first."
-        )
-
-    index = faiss.read_index(str(INDEX_FILE))
-
-    chunks = json.loads(
-        METADATA_FILE.read_text(encoding="utf-8")
-    )
-
+@lru_cache(maxsize=1)
+def _load_index(
+    index_file: Path, metadata_file: Path, index_mtime: int, metadata_mtime: int,
+) -> tuple[Any, list[dict[str, Any]]]:
+    index = faiss.read_index(str(index_file))
+    chunks = json.loads(metadata_file.read_text(encoding="utf-8"))
     if index.ntotal != len(chunks):
         raise ValueError("FAISS index and metadata are inconsistent.")
+    return index, chunks
+
+
+def search(query: str, top_k: int = 3) -> list[dict[str, Any]]:
+    """Retrieve the most semantically similar chunks."""
+    try:
+        index, chunks = _load_index(
+            INDEX_FILE.resolve(), METADATA_FILE.resolve(),
+            INDEX_FILE.stat().st_mtime_ns, METADATA_FILE.stat().st_mtime_ns,
+        )
+    except FileNotFoundError as exc:
+        raise FileNotFoundError("FAISS index not found. Build the index first.") from exc
 
     query_vector = np.asarray(
         embed_query(query), dtype=np.float32

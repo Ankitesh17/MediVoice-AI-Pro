@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 from .base import LLMAdapter, Message
 
@@ -51,6 +51,8 @@ class GeminiLLM(LLMAdapter):
     async def stream(
         self, messages: list[Message]
     ) -> AsyncIterator[str]:
+        from openai import omit
+
         payload = cast(
             "list[ChatCompletionMessageParam]",
             [
@@ -59,19 +61,30 @@ class GeminiLLM(LLMAdapter):
             ],
         )
 
+        # The receptionist handles transactions and safety checks before this
+        # call. Skip the thinking budget on the documented 2.5 Flash model.
+        effort = os.getenv("GEMINI_REASONING_EFFORT")
+        if effort is None and self._model == _DEFAULT_MODEL:
+            effort = "none"
         completion = await self._client.chat.completions.create(
             model=self._model,
             messages=payload,
             stream=True,
+            reasoning_effort=(
+                cast(Literal["none", "low", "medium", "high"], effort)
+                if effort in ("none", "low", "medium", "high")
+                else omit
+            ),
         )
 
-        async for chunk in completion:
-            if not chunk.choices:
-                continue
+        async with completion:
+            async for chunk in completion:
+                if not chunk.choices:
+                    continue
 
-            delta = chunk.choices[0].delta.content
-            if delta:
-                yield delta
+                delta = chunk.choices[0].delta.content
+                if delta:
+                    yield delta
 
     async def aclose(self) -> None:
         await self._client.close()

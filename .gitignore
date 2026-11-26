@@ -44,3 +44,32 @@ backend/faiss_index/
 *.db
 *.db-shm
 *.db-wal
+
+# Secrets
+.env
+.env.*
+!.env.example
+!.env.local.example
+
+# Backup files
+*.backup
+*.bak
+*.backup.tsx
+*.before-security-update
+*_backup.py
+*_before_intent_fix.py
+
+# Local databases
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+
+# Dependencies and build files
+.venv/
+node_modules/
+.next/
+.vercel/
+__pycache__/
+.DS_Store
+*.tsbuildinfo

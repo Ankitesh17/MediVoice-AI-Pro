@@ -32,6 +32,7 @@ class Transcript:
 
     text: str
     is_final: bool
+    uncertain: bool = False
 
 
 class STTAdapter(ABC):

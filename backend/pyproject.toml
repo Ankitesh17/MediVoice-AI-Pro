@@ -18,6 +18,7 @@ dependencies = [
     "faiss-cpu>=1.16.0",
     "sentence-transformers>=6.3.0",
     "pypdf>=7.1.0",
+    "torch==2.15.0",
 ]
 
 [dependency-groups]
@@ -56,3 +57,13 @@ module = [
     "app.services.booking_flow_old",
 ]
 ignore_errors = true
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", marker = "sys_platform == 'linux'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

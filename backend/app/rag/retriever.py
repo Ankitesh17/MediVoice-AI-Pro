@@ -1,8 +1,15 @@
 from typing import Any
 
+from .embeddings import get_model
 from .vector_store import search
 
 MIN_SIMILARITY = 0.45
+
+
+def preload_retrieval() -> None:
+    """Load the model, FAISS artifacts, and the first CPU inference path."""
+    get_model()
+    search("clinic opening hours", top_k=1)
 
 
 def retrieve_context(question: str, top_k: int = 3) -> dict[str, Any]:

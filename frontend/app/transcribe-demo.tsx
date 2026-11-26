@@ -2,13 +2,12 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AuraOrb } from "./aura-orb";
+import { PlaybackGate } from "./playback-gate";
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8000/ws";
+const CONNECTION_TIMEOUT_MS = 20_000;
 const TARGET_SAMPLE_RATE = 16000;
-// Barge-in sensitivity: how loud, and for how many consecutive ~46ms frames,
-// the user must speak over the assistant before we interrupt it.
-const BARGE_IN_RMS = 0.05;
-const BARGE_IN_FRAMES = 3;
+const PLAYBACK_TAIL_SECONDS = 0.12;
 // Defaults so the controls are usable before connecting; the backend confirms
 // the real list on connect.
 const DEFAULT_LANGUAGES: Record<string, string> = {
@@ -74,7 +73,7 @@ export function TranscribeDemo() {
   const [target, setTarget] = useState("en");
   const [ttsProvider, setTtsProvider] = useState("piper");
 
-  // Keep the latest desired config in a ref so the WS onopen handler can send it
+  // Keep the latest desired config in a ref so the ready handler can send it
   // without being re-created (and without stale closure values).
   const desiredConfigRef = useRef({
     mode: "talk" as Mode,
@@ -83,17 +82,20 @@ export function TranscribeDemo() {
     tts: "piper",
   });
 
+  const attemptRef = useRef(0);
+  const timeoutRef = useRef<number | null>(null);
+  const readyRef = useRef(false);
   const wsRef = useRef<WebSocket | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const playHeadRef = useRef(0); // scheduled-playback cursor (seconds)
   const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set()); // active TTS playback
   const speakingRef = useRef(false); // mirror of `speaking` for the audio callback
-  const loudFramesRef = useRef(0); // consecutive loud frames while the AI speaks
+  const waitingForInterruptRef = useRef(false);
 
   // Barge-in: stop playing the assistant and tell the backend to cancel its
   // in-flight reply. Called when the user starts talking over the assistant.
-  const bargeIn = useCallback(() => {
+  const stopPlayback = useCallback(() => {
     for (const src of sourcesRef.current) {
       try {
         src.stop();
@@ -106,11 +108,16 @@ export function TranscribeDemo() {
     if (ctx) playHeadRef.current = ctx.currentTime;
     speakingRef.current = false;
     setSpeaking(false);
+  }, []);
+
+  const bargeIn = useCallback(() => {
+    stopPlayback();
     const ws = wsRef.current;
-    if (ws?.readyState === WebSocket.OPEN) {
+    if (readyRef.current && ws?.readyState === WebSocket.OPEN) {
+      waitingForInterruptRef.current = true;
       ws.send(JSON.stringify({ type: "interrupt" }));
     }
-  }, []);
+  }, [stopPlayback]);
 
   // Apply a control change. Works before *and* after connecting: it updates the
   // desired config (sent to the backend on connect) and, if already connected,
@@ -124,7 +131,7 @@ export function TranscribeDemo() {
       if (patch.target !== undefined) setTarget(patch.target);
       if (patch.tts !== undefined) setTtsProvider(patch.tts);
       const ws = wsRef.current;
-      if (ws?.readyState === WebSocket.OPEN) {
+      if (readyRef.current && ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: "config", ...cfg }));
         setTurns([]); // a config switch starts a fresh transcript view
       }
@@ -133,8 +140,14 @@ export function TranscribeDemo() {
   );
 
   const stop = useCallback(() => {
-    wsRef.current?.close();
+    attemptRef.current += 1;
+    readyRef.current = false;
+    waitingForInterruptRef.current = false;
+    if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
+    timeoutRef.current = null;
+    const ws = wsRef.current;
     wsRef.current = null;
+    if (ws && ws.readyState < WebSocket.CLOSING) ws.close();
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
     sourcesRef.current.clear();
@@ -154,39 +167,77 @@ export function TranscribeDemo() {
     setLlm(null);
     setTts(null);
     setStatus("connecting");
+    const attempt = ++attemptRef.current;
+    const fail = (message: string) => {
+      if (attemptRef.current !== attempt) return;
+      stop();
+      setError(message);
+      setStatus("error");
+    };
+    timeoutRef.current = window.setTimeout(() => {
+      fail("Timed out waiting for microphone access or for the voice server to be ready.");
+    }, CONNECTION_TIMEOUT_MS);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 },
+      });
+      if (attemptRef.current !== attempt) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       streamRef.current = stream;
 
       const audioCtx = new AudioContext();
       audioCtxRef.current = audioCtx;
       playHeadRef.current = audioCtx.currentTime;
       const inRate = audioCtx.sampleRate;
+      const gate = new PlaybackGate();
+      let lastSpeechAt: number | null = null;
+      let lastTurnSpeechAt: number | null = null;
+      let firstAudioPending = false;
+      let playbackTailUntil = 0;
+      const outputLatency = audioCtx.outputLatency || audioCtx.baseLatency || 0;
 
       const ws = new WebSocket(WS_URL);
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
 
-      ws.onopen = () => {
-        console.log("MediVoice: WebSocket connected");
-        setStatus("live");
-        // Apply whatever the user selected before pressing Start.
-        ws.send(JSON.stringify({ type: "config", ...desiredConfigRef.current }));
+      ws.onerror = () => fail("Could not connect to the voice server.");
+      ws.onclose = (event) => {
+        if (attemptRef.current !== attempt) return;
+        if (readyRef.current && event.code === 1000) {
+          stop();
+        } else {
+          fail(`Voice connection closed (code ${event.code}).`);
+        }
       };
-      ws.onerror = () => {
-        setError("WebSocket error — is the backend running on :8000?");
-        setStatus("error");
-      };
-      ws.onclose = () => setStatus((s) => (s === "live" ? "idle" : s));
 
       ws.onmessage = (ev) => {
+        if (attemptRef.current !== attempt || ws.readyState !== WebSocket.OPEN) return;
         // Binary frames are TTS audio (16kHz Int16 PCM) — schedule playback.
         if (typeof ev.data !== "string") {
-          playPcm(audioCtx, playHeadRef, sourcesRef.current, ev.data as ArrayBuffer);
+          if (waitingForInterruptRef.current) return;
+          const startAt = playPcm(audioCtx, playHeadRef, sourcesRef.current, ev.data as ArrayBuffer);
+          if (startAt === undefined) return;
+          playbackTailUntil = playHeadRef.current + outputLatency + PLAYBACK_TAIL_SECONDS;
+          if (!speakingRef.current) {
+            speakingRef.current = true;
+            setSpeaking(true);
+          }
+          if (firstAudioPending && lastTurnSpeechAt !== null) {
+            const delayMs = Math.round((startAt + outputLatency - lastTurnSpeechAt) * 1000);
+            console.info("Voice latency | estimated speech end to first audible PCM (ms)", delayMs);
+          }
+          firstAudioPending = false;
           return;
         }
         const msg = JSON.parse(ev.data) as ServerMsg;
-        if (msg.type === "state") {
+        if (msg.type === "state" && msg.value === "ready" && !readyRef.current) {
+          if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
+          timeoutRef.current = null;
+          readyRef.current = true;
+          ws.send(JSON.stringify({ type: "config", ...desiredConfigRef.current }));
+          setStatus("live");
           // Display info + available options. Do NOT adopt the server's default
           // mode/source/target here — the user's pre-Start selection wins; the
           // backend confirms it via the `config` echo right after.
@@ -209,10 +260,12 @@ export function TranscribeDemo() {
             tts: msg.tts,
           };
         } else if (msg.type === "error") {
-          setError(msg.message);
-          setStatus("error");
+          if (readyRef.current) setError(msg.message);
+          else fail(msg.message);
         } else if (msg.type === "transcript") {
           if (msg.isFinal) {
+            lastTurnSpeechAt = lastSpeechAt;
+            lastSpeechAt = null;
             setPartial("");
             setTurns((t) => [...t, { role: "user", text: msg.text }]);
           } else {
@@ -220,12 +273,15 @@ export function TranscribeDemo() {
           }
         } else if (msg.type === "assistant") {
           if ("phase" in msg && msg.phase === "start") {
-            loudFramesRef.current = 0;
+            waitingForInterruptRef.current = false;
+            firstAudioPending = true;
             setTurns((t) => [...t, { role: "assistant", text: "" }]);
           } else if ("phase" in msg && msg.phase === "interrupted") {
             // Server confirmed the barge-in; mark the turn as cut off.
-            speakingRef.current = false;
-            setSpeaking(false);
+            waitingForInterruptRef.current = false;
+            playbackTailUntil = 0;
+            firstAudioPending = false;
+            stopPlayback();
             setTurns((t) => {
               const last = t[t.length - 1];
               if (!last || last.role !== "assistant") return t;
@@ -240,23 +296,7 @@ export function TranscribeDemo() {
             });
           }
         } else if (msg.type === "audio") {
-          if (msg.phase === "start") {
-            // Reset the playhead so a new segment starts at "now" if playback
-            // had already drained.
-            playHeadRef.current = Math.max(
-              playHeadRef.current,
-              audioCtx.currentTime,
-            );
-            speakingRef.current = true;
-            setSpeaking(true);
-          } else if (msg.phase === "end") {
-            speakingRef.current = false;
-            setSpeaking(false);
-          } else if (msg.phase === "error") {
-            speakingRef.current = false;
-            setSpeaking(false);
-            setError(`TTS: ${msg.message}`);
-          }
+          if (msg.phase === "error") setError(`TTS: ${msg.message}`);
         }
       };
 
@@ -265,36 +305,32 @@ export function TranscribeDemo() {
       source.connect(processor);
       processor.connect(audioCtx.destination);
       processor.onaudioprocess = (e) => {
+        if (attemptRef.current !== attempt || !readyRef.current) return;
         const input = e.inputBuffer.getChannelData(0);
         let sum = 0;
         for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
         const rms = Math.sqrt(sum / input.length);
         setLevel(Math.min(1, rms * 4));
 
-        // Barge-in: if the user speaks while the assistant is talking, interrupt.
-        // Require a few consecutive loud frames to avoid triggering on the
-        // assistant's own audio bleeding into the mic or brief noise.
-        if (speakingRef.current && rms >= BARGE_IN_RMS) {
-          loudFramesRef.current += 1;
-          if (loudFramesRef.current >= BARGE_IN_FRAMES) {
-            loudFramesRef.current = 0;
-            bargeIn();
-          }
-        } else {
-          loudFramesRef.current = 0;
+        const playing = audioCtx.currentTime < playbackTailUntil;
+        if (!playing && speakingRef.current) {
+          speakingRef.current = false;
+          setSpeaking(false);
         }
-
+        if (ws.readyState !== WebSocket.OPEN) return;
         const pcm = downsampleToInt16(input, inRate, TARGET_SAMPLE_RATE);
-        if (ws.readyState === WebSocket.OPEN && pcm.byteLength > 0) {
-          ws.send(pcm.buffer);
-          // Avoid logging every audio frame.
+        const { frames, interrupt } = gate.capture(pcm, rms, playing);
+        if (interrupt) {
+          playbackTailUntil = 0;
+          bargeIn();
         }
+        if (frames.length && rms >= 0.0035) lastSpeechAt = audioCtx.currentTime;
+        for (const frame of frames) ws.send(frame.buffer as ArrayBuffer);
       };
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      setStatus("error");
+      fail(err instanceof Error ? err.message : String(err));
     }
-  }, [bargeIn]);
+  }, [bargeIn, stop, stopPlayback]);
 
   useEffect(() => () => stop(), [stop]);
 
@@ -567,7 +603,7 @@ function playPcm(
   playHead: { current: number },
   sources: Set<AudioBufferSourceNode>,
   data: ArrayBuffer,
-): void {
+): number | undefined {
   const int16 = new Int16Array(data);
   if (int16.length === 0) return;
   const float32 = new Float32Array(int16.length);
@@ -583,6 +619,7 @@ function playPcm(
   const startAt = Math.max(ctx.currentTime, playHead.current);
   src.start(startAt);
   playHead.current = startAt + buf.duration;
+  return startAt;
 }
 
 /** Linear-interpolation downsample of Float32 [-1,1] audio to Int16 PCM. */

@@ -13,6 +13,12 @@ from .base import SAMPLE_RATE, STTAdapter, Transcript
 __all__ = ["SAMPLE_RATE", "STTAdapter", "Transcript", "create_stt_adapter"]
 
 
+def preload_stt_model() -> None:
+    """Load the configured local model once per process."""
+    if (os.getenv("STT_PROVIDER") or "whisper").lower() == "whisper":
+        create_stt_adapter("whisper")
+
+
 def create_stt_adapter(provider: str | None = None) -> STTAdapter:
     name = (provider or os.getenv("STT_PROVIDER") or "whisper").lower()
     if name == "whisper":
